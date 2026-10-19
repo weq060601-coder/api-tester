@@ -1058,6 +1058,8 @@ def build_gui():  # noqa: C901
     mcount_var = tk.StringVar(value="0")
     tk.Label(lhead, textvariable=mcount_var, bg=C["hover"], fg=C["muted"], font=F["small"],
              padx=px(7)).pack(side="left", padx=(px(8), 0))
+    ttk.Button(lhead, text="复制 ID", style="Compact.TButton",
+               command=lambda: on_copy()).pack(side="right", padx=(px(6), 0))
     filter_var = tk.StringVar(value="")
     filt = ttk.Entry(lhead, textvariable=filter_var, width=18)
     filt.pack(side="right")
@@ -2229,10 +2231,13 @@ def build_gui():  # noqa: C901
     def on_copy(_e=None):
         sel = tree.selection()
         if not sel:
+            ui_log("[!] 先选中一个或多个模型，再复制 ID", "warn")
             return
         root.clipboard_clear()
         root.clipboard_append("\n".join(tree.set(i, "model") for i in sel))
+        root.update()
         ui_log(f"[i] 已复制 {len(sel)} 个模型 ID 到剪贴板", "info")
+        return "break"
 
     def on_right(e):
         iid = tree.identify_row(e.y)
@@ -2260,6 +2265,8 @@ def build_gui():  # noqa: C901
     tree.bind("<Double-1>", lambda e: act_chat() if tree.identify_row(e.y) else None)
     tree.bind("<Button-3>", on_right)
     tree.bind("<Control-c>", on_copy)
+    tree.bind("<Control-KeyPress-c>", on_copy)
+    tree.bind("<Control-Insert>", on_copy)
     root.bind("<Control-Return>", lambda _e: act_chat())
     root.bind("<F5>", lambda _e: act_models())
     nb.bind("<<NotebookTabChanged>>", lambda _e: open_pelican_history()
