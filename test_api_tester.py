@@ -383,6 +383,41 @@ class GuiPersistenceTests(unittest.TestCase):
             fetch.assert_not_called()
             chat.assert_not_called()
 
+    def test_models_are_bound_to_named_key_within_one_supplier(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "settings.json"
+
+            def create(root):
+                self.set_entry(self.entry(root, "Base URL"), "http://same-provider.test/v1")
+                self.set_entry(self.entry(root, "API Key"), "key-a")
+                self.press(root, "保存供应商", "同一供应商")
+                self.press(root, "保存/新增 Key", "组 A")
+                self.add_model_ids(root, "model-a1,model-a2")
+                self.set_entry(self.entry(root, "API Key"), "key-b")
+                self.assertEqual(self.model_ids(root), [],
+                                 "手动改 Key 后不能继续显示旧 Key 的模型")
+                self.press(root, "保存/新增 Key", "组 B")
+                self.add_model_ids(root, "model-b1")
+                self.select(root, "命名 Key", "组 A")
+                self.assertEqual(self.model_ids(root), ["model-a1", "model-a2"])
+                self.select(root, "命名 Key", "组 B")
+                self.assertEqual(self.model_ids(root), ["model-b1"])
+                saved = json.loads(settings.read_text(encoding="utf-8"))
+                slots = saved["providers"]["同一供应商"]["key_models"]
+                self.assertEqual(slots["组 A"]["models"], ["model-a1", "model-a2"])
+                self.assertEqual(slots["组 B"]["models"], ["model-b1"])
+
+            self.run_gui(settings, create)
+
+            def restored(root):
+                self.assertEqual(self.model_ids(root), ["model-b1"])
+                self.select(root, "命名 Key", "组 A")
+                self.assertEqual(self.model_ids(root), ["model-a1", "model-a2"])
+                self.select(root, "命名 Key", "组 B")
+                self.assertEqual(self.model_ids(root), ["model-b1"])
+
+            self.run_gui(settings, restored)
+
     def test_fetch_merges_manual_ids_and_restores_without_fetch(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Path(directory) / "settings.json"

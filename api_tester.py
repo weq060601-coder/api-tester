@@ -1360,7 +1360,66 @@ def build_gui():  # noqa: C901
             return state["providers"][active].setdefault("named_keys", {})
         return state.setdefault("named_keys", {})
 
+    def model_slot(key_name=None):
+        """模型列表的存档槽位只使用命名 Key 名称，不保存原始 Key。"""
+        name = key_box.get() if key_name is None else str(key_name)
+        return name.strip() or "__unnamed__"
+
+    def ensure_model_slots(cfg):
+        """读取新旧供应商档案，统一成按命名 Key 分组的模型存档。"""
+        slots = cfg.get("key_models")
+        if not isinstance(slots, dict):
+            legacy_slot = str(cfg.get("active_key") or "").strip() or "__unnamed__"
+            slots = {legacy_slot: {
+                "models": list(cfg.get("models", [])) if isinstance(cfg.get("models"), list) else [],
+                "results": dict(cfg.get("results", {})) if isinstance(cfg.get("results"), dict) else {},
+                "save_models": cfg.get("save_models", True) is not False,
+            }}
+        clean = {}
+        for slot, value in slots.items():
+            if not isinstance(value, dict):
+                continue
+            models = list(dict.fromkeys(m for m in value.get("models", [])
+                                        if isinstance(m, str) and m.strip()))
+            results = {m: tuple(v) for m, v in value.get("results", {}).items()
+                       if isinstance(m, str) and isinstance(v, (list, tuple)) and len(v) == 2}
+            clean[str(slot).strip() or "__unnamed__"] = {
+                "models": models, "results": results,
+                "save_models": value.get("save_models", True) is not False,
+            }
+        if not clean:
+            clean[model_slot(cfg.get("active_key"))] = {"models": [], "results": {}, "save_models": True}
+        cfg["key_models"] = clean
+        return clean
+
+    def stash_current_model_slot(cfg=None, key_name=None):
+        cfg = cfg or state.get("providers", {}).get(state.get("active_provider", ""))
+        if not isinstance(cfg, dict):
+            return
+        slots = ensure_model_slots(cfg)
+        slots[model_slot(key_name)] = {"models": list(state["models"]),
+                               "results": dict(state["results"]),
+                               "save_models": save_models_var.get()}
+
+    def load_model_slot(cfg, key_name=None):
+        slots = ensure_model_slots(cfg)
+        slot = model_slot(key_name)
+        value = slots.get(slot, {"models": [], "results": {}, "save_models": True})
+        save_models_var.set(value.get("save_models", True) is not False)
+        state["models"] = list(value.get("models", []))
+        state["results"] = dict(value.get("results", {}))
+        cfg["active_key"] = "" if slot == "__unnamed__" else slot
+        return slot
+
     def connection_snapshot():
+        active_cfg = state.get("providers", {}).get(state.get("active_provider", ""))
+        if isinstance(active_cfg, dict):
+            stash_current_model_slot(active_cfg)
+            slots = {k: dict(v) for k, v in ensure_model_slots(active_cfg).items()}
+        else:
+            slots = {model_slot(): {"models": list(state["models"]),
+                                    "results": dict(state["results"]),
+                                    "save_models": save_models_var.get()}}
         return {
             "base_url": base_var.get().strip(), "api_key": key_var.get(),
             "named_keys": dict(current_keys()), "active_key": key_box.get(),
@@ -1370,6 +1429,7 @@ def build_gui():  # noqa: C901
             "headers": hdr_txt.get("1.0", "end").rstrip("\n"),
             "save_models": save_models_var.get(),
             "models": list(state["models"]), "results": dict(state["results"]),
+            "key_models": slots,
         }
 
     def capture_provider():
@@ -1387,8 +1447,17 @@ def build_gui():  # noqa: C901
         providers = {}
         for name, cfg in state.get("providers", {}).items():
             providers[name] = dict(cfg)
-            if not cfg.get("save_models", True):
-                providers[name].update(models=[], results={})
+            slots = ensure_model_slots(cfg)
+            providers[name]["key_models"] = {}
+            for slot, value in slots.items():
+                providers[name]["key_models"][slot] = dict(value)
+                if not value.get("save_models", True):
+                    providers[name]["key_models"][slot].update(models=[], results={})
+            current = providers[name]["key_models"].get(model_slot(cfg.get("active_key")))
+            if current is not None:
+                providers[name]["models"] = list(current["models"])
+                providers[name]["results"] = dict(current["results"])
+                providers[name]["save_models"] = current["save_models"]
         data = {
             "base_url": base_var.get(), "api_key": key_var.get(), "timeout": timeout_var.get(),
             "proxy": proxy_var.get(), "insecure": insecure_var.get(), "stream": stream_var.get(),
@@ -1451,8 +1520,7 @@ def build_gui():  # noqa: C901
         for cfg in state["providers"].values():
             keys = cfg.get("named_keys")
             cfg["named_keys"] = {n: v for n, v in keys.items() if isinstance(v, str)} if isinstance(keys, dict) else {}
-            if cfg.get("save_models") is False:
-                cfg.update(models=[], results={})
+            ensure_model_slots(cfg)
         provider_box.configure(values=list(state["providers"]))
         if data.get("active_provider") in state["providers"]:
             provider_box.set(data["active_provider"])
@@ -1482,6 +1550,11 @@ def build_gui():  # noqa: C901
         if save_models_var.get() and isinstance(data.get("results"), dict):
             state["results"] = {m: (v[0], v[1]) for m, v in data["results"].items()
                                 if isinstance(v, list) and len(v) == 2}
+        if state.get("active_provider") in state.get("providers", {}):
+            cfg = state["providers"][state["active_provider"]]
+            key_name = str(data.get("active_key") or cfg.get("active_key") or "")
+            key_box.set(key_name if key_name in current_keys() else "")
+            load_model_slot(cfg, key_name)
         geo = re.fullmatch(r"(\d+)x(\d+)\+(-?\d+)\+(-?\d+)", str(data.get("geometry") or ""))
         if geo:
             w_, h_, x_, y_ = (int(v) for v in geo.groups())
@@ -1547,10 +1620,9 @@ def build_gui():  # noqa: C901
         insecure_var.set(bool(cfg.get("insecure", False)))
         key_var.set(cfg.get("api_key", ""))
         key_box.configure(values=list(current_keys()))
-        key_box.set(cfg.get("active_key", ""))
-        save_models_var.set(cfg.get("save_models", True) is not False)
-        state["models"] = list(cfg.get("models", []))
-        state["results"] = dict(cfg.get("results", {}))
+        active_key = cfg.get("active_key", "")
+        key_box.set(active_key if active_key in current_keys() else "")
+        load_model_slot(cfg, key_box.get())
         filter_var.set("")
         refresh_tree()
         update_chip()
@@ -1582,16 +1654,47 @@ def build_gui():  # noqa: C901
         if not name or not name.strip():
             return
         name = name.strip()
+        old_slot = model_slot()
         current_keys()[name] = value
+        active_cfg = state.get("providers", {}).get(state.get("active_provider", ""))
+        if isinstance(active_cfg, dict):
+            slots = ensure_model_slots(active_cfg)
+            slots[name] = slots.pop(old_slot, {"models": list(state["models"]),
+                                               "results": dict(state["results"]),
+                                               "save_models": save_models_var.get()})
         key_box.configure(values=list(current_keys()))
         key_box.set(name)
+        if isinstance(active_cfg, dict):
+            active_cfg["active_key"] = name
         ui_log(f"[OK] 已保存命名 Key: {name}", "ok")
         save_now()
 
     def apply_key(_evt=None):
-        value = current_keys().get(key_box.get())
+        if state["testing"]:
+            key_box.set(state.get("active_key", ""))
+            return
+        target = key_box.get()
+        active_cfg = state.get("providers", {}).get(state.get("active_provider", ""))
+        old_key = active_cfg.get("active_key", "") if isinstance(active_cfg, dict) else ""
+        if isinstance(active_cfg, dict):
+            stash_current_model_slot(active_cfg, old_key)
+        value = current_keys().get(target)
         if isinstance(value, str):
+            was_loading = guard["loading"]
+            guard["loading"] = True
+            state["active_key"] = target
             key_var.set(value)
+            key_box.set(target)
+            if isinstance(active_cfg, dict):
+                active_cfg["active_key"] = target
+                load_model_slot(active_cfg, target)
+            else:
+                state["models"] = []
+                state["results"] = {}
+            guard["loading"] = was_loading
+            filter_var.set("")
+            refresh_tree()
+            sync_pelican_sources()
             save_now()
 
     def rename_key():
@@ -1607,18 +1710,33 @@ def build_gui():  # noqa: C901
             ui_log("[!] 已有同名 Key，请换一个名称", "warn")
             return
         current_keys()[name] = current_keys().pop(old)
+        active_cfg = state.get("providers", {}).get(state.get("active_provider", ""))
+        if isinstance(active_cfg, dict):
+            slots = ensure_model_slots(active_cfg)
+            slots[name] = slots.pop(old, {"models": list(state["models"]),
+                                          "results": dict(state["results"]),
+                                          "save_models": save_models_var.get()})
         key_box.configure(values=list(current_keys()))
         key_box.set(name)
+        if isinstance(active_cfg, dict):
+            active_cfg["active_key"] = name
         save_now()
 
     def delete_key():
         name = key_box.get()
         if name and name in current_keys():
             deleted = current_keys().pop(name)
+            active_cfg = state.get("providers", {}).get(state.get("active_provider", ""))
+            if isinstance(active_cfg, dict):
+                ensure_model_slots(active_cfg).pop(name, None)
             key_box.configure(values=list(current_keys()))
             key_box.set("")
             if key_var.get() == deleted:
                 key_var.set("")
+                if isinstance(active_cfg, dict):
+                    active_cfg["active_key"] = ""
+                    load_model_slot(active_cfg, "")
+                    refresh_tree()
             save_now()
 
     provider_box.bind("<<ComboboxSelected>>", apply_provider)
@@ -1645,7 +1763,16 @@ def build_gui():  # noqa: C901
 
     def sync_key_name(*_args):
         if not guard["loading"] and key_box.get() and current_keys().get(key_box.get()) != key_var.get():
+            active_cfg = state.get("providers", {}).get(state.get("active_provider", ""))
+            if isinstance(active_cfg, dict):
+                # Preserve the old named slot before a manually edited Key
+                # detaches from it; the new raw Key must not see its models.
+                stash_current_model_slot(active_cfg)
+                active_cfg["active_key"] = ""
             key_box.set("")
+            state["models"] = []
+            state["results"] = {}
+            refresh_tree()
 
     key_var.trace_add("write", sync_key_name)
 
