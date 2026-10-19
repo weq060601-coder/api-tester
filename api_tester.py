@@ -1058,8 +1058,6 @@ def build_gui():  # noqa: C901
     mcount_var = tk.StringVar(value="0")
     tk.Label(lhead, textvariable=mcount_var, bg=C["hover"], fg=C["muted"], font=F["small"],
              padx=px(7)).pack(side="left", padx=(px(8), 0))
-    ttk.Button(lhead, text="复制 ID", style="Compact.TButton",
-               command=lambda: on_copy()).pack(side="right", padx=(px(6), 0))
     filter_var = tk.StringVar(value="")
     filt = ttk.Entry(lhead, textvariable=filter_var, width=18)
     filt.pack(side="right")
@@ -2228,15 +2226,15 @@ def build_gui():  # noqa: C901
     action_btns = (btn_models, btn_chat, btn_batch, btn_emb, btn_image)
 
     # ---------------- 事件 ----------------
-    def on_copy(_e=None):
-        sel = tree.selection()
-        if not sel:
-            ui_log("[!] 先选中一个或多个模型，再复制 ID", "warn")
+    def copy_model_id(iid=None, _event=None):
+        iid = iid or tree.focus() or (tree.selection()[0] if tree.selection() else "")
+        if not iid or iid not in tree.get_children(""):
+            ui_log("[!] 先选中一个模型行，再复制 ID", "warn")
             return
         root.clipboard_clear()
-        root.clipboard_append("\n".join(tree.set(i, "model") for i in sel))
+        root.clipboard_append(tree.set(iid, "model"))
         root.update()
-        ui_log(f"[i] 已复制 {len(sel)} 个模型 ID 到剪贴板", "info")
+        ui_log(f"[i] 已复制模型 ID: {tree.set(iid, 'model')}", "info")
         return "break"
 
     def on_right(e):
@@ -2247,13 +2245,13 @@ def build_gui():  # noqa: C901
             return
         menu = tk.Menu(root, tearoff=0, bg=C["panel"], fg=C["fg"], activebackground=C["sel"],
                        activeforeground=C["acc_hi"], bd=0, relief="flat", font=F["ui"])
+        menu.add_command(label="  复制此模型 ID", command=lambda row=iid: copy_model_id(row))
+        menu.add_separator()
         menu.add_command(label="  测试选中模型", command=act_chat)
         menu.add_command(label="  批量测速选中", command=act_batch)
         menu.add_command(label="  测试 Embedding", command=act_emb)
         menu.add_command(label="  打开鹈鹕测试页", command=act_pelican)
         menu.add_command(label="  查看鹈鹕作品", command=open_pelican_history)
-        menu.add_separator()
-        menu.add_command(label="  复制模型 ID", command=on_copy)
         menu.add_command(label="  复制测试结果", command=lambda: (
             root.clipboard_clear(),
             root.clipboard_append("\n".join(" ".join(map(str, tree.item(i, "values")))
@@ -2264,9 +2262,9 @@ def build_gui():  # noqa: C901
 
     tree.bind("<Double-1>", lambda e: act_chat() if tree.identify_row(e.y) else None)
     tree.bind("<Button-3>", on_right)
-    tree.bind("<Control-c>", on_copy)
-    tree.bind("<Control-KeyPress-c>", on_copy)
-    tree.bind("<Control-Insert>", on_copy)
+    tree.bind("<Control-c>", lambda e: copy_model_id(_event=e))
+    tree.bind("<Control-KeyPress-c>", lambda e: copy_model_id(_event=e))
+    tree.bind("<Control-Insert>", lambda e: copy_model_id(_event=e))
     root.bind("<Control-Return>", lambda _e: act_chat())
     root.bind("<F5>", lambda _e: act_models())
     nb.bind("<<NotebookTabChanged>>", lambda _e: open_pelican_history()

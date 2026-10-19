@@ -443,17 +443,19 @@ class GuiPersistenceTests(unittest.TestCase):
                 self.run_gui(settings, lambda root: self.assertEqual(self.model_ids(root), ["manual", "fetched"]))
                 fetch.assert_not_called()
 
-    def test_model_ids_can_be_copied_from_toolbar_and_selection(self):
+    def test_model_ids_can_be_copied_from_selected_list_rows(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Path(directory) / "settings.json"
             settings.write_text(json.dumps({"models": ["copy-one", "copy-two"]}), encoding="utf-8")
             def driver(root):
                 tree = self.model_tree(root)
-                tree.selection_set(tree.get_children())
-                button = next(w for w in self.widgets(root) if isinstance(w, ttk.Button)
-                              and w.cget("text") == "复制 ID")
-                button.invoke()
-                self.assertEqual(root.clipboard_get(), "copy-one\ncopy-two")
+                tree.selection_set(tree.get_children()[1])
+                tree.focus(tree.get_children()[1])
+                tree.focus_set()
+                self.assertTrue(tree.bind("<Control-c>"))
+                self.assertTrue(tree.bind("<Control-Insert>"))
+                self.assertFalse(any(isinstance(w, ttk.Button) and w.cget("text") == "复制 ID"
+                                      for w in self.widgets(root)))
             self.run_gui(settings, driver)
 
     def test_opt_out_removes_existing_saved_results_and_delete_persists(self):
