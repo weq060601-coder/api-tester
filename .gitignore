@@ -1,0 +1,26 @@
+# Local credentials and user-specific settings
+settings.json
+settings.json.tmp
+*.local.json
+*.secret
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.preview-venv/
+
+# Local screenshots and generated diagnostics
+screenshot.png
+pelican/diagnostics/
+
+# User-generated Pelican runs and artwork
+pelican/results/
+pelican/examples/
+
+# Local editor/OS files
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

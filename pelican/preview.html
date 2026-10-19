@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>鹈鹕测试</title>
+<style>
+:root{color-scheme:dark;font-family:"Microsoft YaHei UI","Segoe UI",sans-serif;color:#e6edf3;background:#161b22}
+*,*::before,*::after{box-sizing:border-box;-webkit-user-drag:none;user-select:none}
+html,body{margin:0;width:100%;height:100%;min-width:0;overflow:hidden}
+body{display:flex;flex-direction:column;font-size:13px}
+input,textarea,pre{user-select:text;-webkit-user-drag:none}
+button,input{font:inherit}button{cursor:pointer;border:1px solid #303b4a;border-radius:5px;background:#222b38;color:#e6edf3;padding:7px 10px}
+button:hover{background:#2a3441}button:disabled{color:#6e7681;cursor:default}button:focus-visible,input:focus{outline:1px solid #2dd4bf}
+.primary{background:#2dd4bf;border-color:#2dd4bf;color:#03201b;font-weight:650;white-space:nowrap}.primary:hover{background:#5eead4}
+.primary:disabled{background:#12332f;color:#6e8e8a;border-color:#234641}
+.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #2a3341;flex-shrink:0;min-width:0}
+.selection{min-width:160px;flex:1}.caption{font-size:12px;color:#2dd4bf;margin-bottom:4px}.muted{color:#8b949e;font-size:11px}
+#selection{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.pelican-controls{display:flex;align-items:center;gap:6px;flex-shrink:0;min-width:0;color:#8b949e;font-size:11px;white-space:nowrap}
+.pelican-controls label{display:flex;align-items:center;gap:4px}.pelican-controls select,.pelican-controls input{height:28px;padding:3px 6px;border:1px solid #3b4656;border-radius:4px;background:#0d1117;color:#e6edf3}
+.pelican-controls .control-button{width:58px;height:28px;padding:3px 5px;color:#e6edf3;background:#0d1117;border-color:#3b4656;font-size:11px}
+.pelican-controls input{width:66px}
+#notice{font-size:11px;padding:0 12px;color:#d29922;line-height:1.5;flex-shrink:0;white-space:pre-wrap;overflow-wrap:anywhere}
+#notice:not(:empty){padding-top:8px;padding-bottom:8px;border-bottom:1px solid #2a3341}
+main{flex:1;min-height:0;min-width:0;display:grid;grid-template-columns:minmax(0,42%) minmax(0,1fr);overflow:hidden}
+.history{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid #2a3341}
+.list-head{display:flex;justify-content:space-between;gap:5px;color:#8b949e;padding:9px 12px;font-size:11px}
+#records{flex:1;overflow:auto;padding:0 8px 8px;display:flex;flex-direction:column;gap:7px}
+.record{padding:9px;border:1px solid #2a3341;border-radius:6px;background:#161b22;cursor:pointer;flex-shrink:0}
+.record:hover{border-color:#465166}.record.active{border-color:#2dd4bf;background:#172c2a}
+.row-head{display:flex;align-items:start;gap:6px}.identity{min-width:0;flex:1}.model{font-size:12px;color:#e6edf3;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.provider{color:#8b949e;font-size:11px;margin-top:4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.preview-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;min-height:34px}
+.status{font-size:11px;color:#2dd4bf;overflow-wrap:anywhere;line-height:1.5}.status.failed{color:#f85149}
+.time{color:#6e7681;font-size:10px;margin-top:3px}.thumb{position:relative;width:112px;height:70px;overflow:hidden;border-radius:4px;background:white;flex-shrink:0;border:1px solid #3b4656}
+.thumb iframe{width:640px;height:400px;transform:scale(.175);transform-origin:0 0;position:absolute;left:0;top:0;border:0;pointer-events:none}
+.delete{border:0;padding:1px 4px;background:transparent;color:#6e7681;font-size:17px;line-height:1}
+.detail{display:flex;flex-direction:column;min-height:0;min-width:0;background:#0d1117}
+.detail-head{display:flex;align-items:center;gap:5px;padding:8px 10px;border-bottom:1px solid #2a3341;min-height:39px}
+#title{flex:1;min-width:0;color:#8b949e;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.detail-head button{font-size:11px;padding:4px 6px}.detail-head button.active{color:#2dd4bf;border-color:#2dd4bf}
+#art{flex:1;min-height:220px;width:calc(100% - 20px);margin:10px;border:1px solid #2a3341;border-radius:8px;background:white;box-shadow:0 8px 24px #0005}#raw{flex:1;min-height:0;overflow:auto;white-space:pre-wrap;
+font:11px Consolas,monospace;line-height:1.5;margin:0;padding:12px;overflow-wrap:anywhere;color:#a5d6ff}
+#message{flex:1;min-height:0;overflow:auto;display:grid;align-content:center;justify-items:center;gap:10px;padding:20px;color:#8b949e;line-height:1.7;text-align:center;white-space:pre-wrap;overflow-wrap:anywhere}
+#message.failed{color:#f85149}.empty{padding:25px 10px;line-height:1.7;color:#6e7681;font-size:12px;text-align:center}
+footer{flex-shrink:0;border-top:1px solid #2a3341;color:#6e7681;font-size:10px;padding:6px 12px}
+.record:focus-visible{outline:1px solid #2dd4bf;outline-offset:1px}
+.context-menu{position:fixed;z-index:1000;min-width:210px;max-width:calc(100vw - 16px);padding:5px;background:#161b22;border:1px solid #3b4656;border-radius:7px;box-shadow:0 8px 28px #0009}
+.context-menu button{display:block;width:100%;padding:9px 12px;border:0;background:transparent;text-align:left;white-space:nowrap}
+.context-menu button:hover,.context-menu button:focus-visible{background:#172c2a;color:#2dd4bf}
+.context-menu button:disabled{color:#6e7681;background:transparent}
+.context-menu .danger{color:#f85149}.context-menu hr{border:0;border-top:1px solid #2a3341;margin:5px}
+[hidden]{display:none!important}
+@media(max-width:420px){main{display:flex;flex-direction:column;overflow:auto}.history{flex:0 0 180px;border-right:0;border-bottom:1px solid #2a3341}.detail{flex:1 0 360px;min-height:360px}.thumb{width:88px;height:55px}.thumb iframe{transform:scale(.1375)}.toolbar{padding:8px;flex-wrap:wrap}.selection{flex:1 0 100%}.pelican-controls{flex:1 0 100%;flex-wrap:wrap}.primary{padding:6px;margin-left:auto}.preview-row{flex-wrap:wrap}}
+</style></head><body>
+<div class="toolbar"><div class="selection"><div class="caption">鹈鹕 · SVG 动画测试</div>
+<div id="selection" class="muted">使用主界面的供应商和所选模型</div></div>
+<div class="pelican-controls"><label>推理<button id="reasoning" class="control-button" type="button" title="点击切换推理强度">默认</button></label><label>上限<input id="limit" type="number" min="256" step="1" value="32768" inputmode="numeric"></label><label>超时(秒)<input id="timeout" type="number" min="1" step="1" value="180" inputmode="numeric"></label><span id="save-status" class="muted" role="status"></span></div>
+<button id="generate" class="primary" disabled>生成选中模型</button></div>
+<div id="notice" role="status"></div>
+<main><section class="history"><div class="list-head"><span>测试记录</span><span id="count"></span></div><div id="records"></div></section>
+<section class="detail"><div class="detail-head"><span id="title">作品预览</span><button id="animation" class="active">动画</button><button id="source">原始回复</button></div>
+<iframe id="art" sandbox title="模型作品预览" referrerpolicy="no-referrer" draggable="false" hidden></iframe>
+<pre id="raw" hidden></pre><div id="message">在左侧模型列表手动添加或获取模型，并选中要测试的模型。&#10;确认本页参数后点击「开始生成」。</div>
+</section></main>
+<footer>每次只发送统一题目 · 不发送本地文件或其他模型作品</footer>
+<div id="record-menu" class="context-menu" role="menu" aria-label="测试记录操作" hidden>
+<button type="button" role="menuitem" data-action="explorer">在文件资源管理器中显示</button>
+<button type="button" role="menuitem" data-action="browser">在浏览器中打开作品</button>
+<button type="button" role="menuitem" data-action="raw">查看原始回复</button>
+<hr><button type="button" role="menuitem" data-action="remove" class="danger">移除记录</button>
+</div>
+<script>
+const $=id=>document.getElementById(id), cards=new Map();
+let context={providers:[],selected_models:[],pelican_reasoning:'默认',pelican_tokens:'32768',pelican_timeout:'180'},records=[],selected='',detailVersion='',rawId='',rawMode=false,submitting=false,controlsSettings='';
+let editVersion=0,savedVersion=0,saveTimer=0,savePromise=null;
+const reasoningLevels=['默认','低','中','高'];
+let menuRun='',menuAnchor=null;
+function closeRecordMenu(restoreFocus=false){$('record-menu').hidden=true;menuRun='';if(restoreFocus)menuAnchor?.focus()}
+function showRecordMenu(event,record,anchor){
+ event.preventDefault();event.stopPropagation();
+ const menu=$('record-menu');menuRun=record.id;menuAnchor=anchor;
+ menu.querySelector('[data-action="browser"]').disabled=record.status!=='complete';
+ menu.querySelector('[data-action="raw"]').disabled=record.status==='running';
+ menu.hidden=false;
+ menu.style.left=Math.max(8,Math.min(event.clientX,window.innerWidth-menu.offsetWidth-8))+'px';
+ menu.style.top=Math.max(8,Math.min(event.clientY,window.innerHeight-menu.offsetHeight-8))+'px';
+ menu.querySelector('button:not(:disabled)').focus();
+}
+async function recordAction(action,runId=menuRun){
+ const record=records.find(r=>r.id===runId);closeRecordMenu();if(!record)return;
+ if(action==='raw'){selected=runId;rawMode=true;renderRecords();await renderDetail();return}
+ if(action==='remove'){await removeRecord(record);return}
+ try{const response=await fetch('api/runs/'+runId+'/open',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
+ const result=await response.json();if(!response.ok)throw Error(result.error||'无法打开记录');
+ }catch(error){$('notice').textContent=error.message}
+}
+$('record-menu').addEventListener('click',event=>{const button=event.target.closest('button[data-action]');if(button&&!button.disabled)recordAction(button.dataset.action)});
+$('record-menu').addEventListener('contextmenu',event=>event.preventDefault());
+document.addEventListener('pointerdown',event=>{if(!$('record-menu').contains(event.target))closeRecordMenu()},true);
+document.addEventListener('keydown',event=>{
+ if($('record-menu').hidden)return;
+ if(event.key==='Escape'||event.key==='Tab'){closeRecordMenu(true);if(event.key==='Escape')event.preventDefault();return}
+ if(event.key==='ArrowDown'||event.key==='ArrowUp'){
+  event.preventDefault();const buttons=[...$('record-menu').querySelectorAll('button:not(:disabled)')],index=buttons.indexOf(document.activeElement);
+  buttons[(index+(event.key==='ArrowDown'?1:-1)+buttons.length)%buttons.length].focus();
+ }
+});
+document.addEventListener('scroll',()=>closeRecordMenu(),true);
+window.addEventListener('resize',()=>closeRecordMenu());
+window.addEventListener('blur',()=>closeRecordMenu());
+function provider(){return context.providers.find(p=>p.id===context.selected_provider)}
+function models(){return context.selected_models}
+function updateSelection(){
+ const p=provider(),chosen=models();$('selection').textContent=(p?.name||'先在主界面填写连接')+' · '+(chosen.length?'左侧所选 '+chosen.length+' 个：'+chosen.join('、'):'请在左侧模型列表添加并选择模型');
+ $('selection').title=$('selection').textContent;
+ const settings=JSON.stringify([context.selected_provider,context.pelican_reasoning,context.pelican_tokens,context.pelican_timeout]);
+ if(controlsSettings!==settings&&editVersion===savedVersion&&!savePromise){const level=context.pelican_reasoning||'默认';$('reasoning').dataset.value=reasoningLevels.includes(level)?level:'默认';$('reasoning').textContent=$('reasoning').dataset.value;$('limit').value=context.pelican_tokens||'32768';$('timeout').value=context.pelican_timeout||'180';controlsSettings=settings}
+ $('generate').textContent=chosen.length>1?'生成 '+chosen.length+' 个模型':'开始生成';
+ $('generate').disabled=submitting||!p||!chosen.length;
+}
+function options(){return {reasoning:$('reasoning').dataset.value||'默认',max_tokens:$('limit').value,timeout:$('timeout').value}}
+function changed(){editVersion++;$('save-status').textContent='待保存';clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveOptions().catch(()=>{}),400)}
+async function saveOptions(){
+ clearTimeout(saveTimer);
+ if(savePromise){await savePromise;if(editVersion!==savedVersion)return saveOptions();return}
+ if(editVersion===savedVersion)return;
+ savePromise=(async()=>{
+  while(editVersion!==savedVersion){
+   const version=editVersion,payload=options();
+   if(!$('limit').checkValidity()||!$('timeout').checkValidity()||!payload.max_tokens||!payload.timeout)throw Error('输出上限须为 ≥256 的整数，超时须为正整数');
+   $('save-status').textContent='保存中…';
+   const response=await fetch('api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+   const result=await response.json();if(!response.ok)throw Error(result.error||'参数保存失败');
+   savedVersion=version;
+   context.pelican_tokens=payload.max_tokens;context.pelican_reasoning=payload.reasoning;context.pelican_timeout=payload.timeout;
+   controlsSettings=JSON.stringify([context.selected_provider,payload.reasoning,payload.max_tokens,payload.timeout]);
+  }
+  $('save-status').textContent='已保存';
+ })();
+ try{await savePromise}catch(error){$('save-status').textContent='保存失败';$('notice').textContent=error.message;throw error}finally{savePromise=null}
+}
+$('reasoning').onclick=()=>{const current=reasoningLevels.indexOf($('reasoning').dataset.value||'默认');const level=reasoningLevels[(current+1)%reasoningLevels.length];$('reasoning').dataset.value=level;$('reasoning').textContent=level;changed()};
+$('reasoning').onmousedown=e=>e.preventDefault();
+for(const id of ['limit','timeout']){$(id).addEventListener('input',changed);$(id).addEventListener('change',()=>saveOptions().catch(()=>{}))}
+$('generate').onclick=async()=>{
+ submitting=true;updateSelection();$('notice').textContent='';
+ try{await saveOptions();const response=await fetch('api/generate',{method:'POST',headers:{'Content-Type':'application/json'},
+ body:JSON.stringify({provider:context.selected_provider,models:models(),...options()})});const result=await response.json();
+ if(!response.ok)throw Error(result.error||'无法开始生成');
+ selected=result.ids[0];rawMode=false;await poll(false);
+ }catch(error){$('notice').textContent=error.message}finally{submitting=false;updateSelection()}
+};
+async function selectRecord(id){selected=id;rawMode=false;renderRecords();await renderDetail()}
+$('animation').onclick=()=>{rawMode=false;renderDetail()};
+$('source').onclick=()=>{rawMode=true;renderDetail()};
+async function renderDetail(){
+ const record=records.find(r=>r.id===selected);
+ $('animation').classList.toggle('active',!rawMode);$('source').classList.toggle('active',rawMode);
+ $('art').hidden=true;$('raw').hidden=true;$('message').hidden=true;
+ if(!record){$('message').hidden=false;$('message').className='';$('message').textContent='在左侧选择模型并生成，或选择已有测试记录。';return}
+ $('title').textContent=record.model+' · '+record.provider;$('title').title=$('title').textContent;
+ if(rawMode){$('raw').hidden=false;
+  if(record.status==='running'){rawId='';$('raw').textContent='正在生成 · 已收到 '+(record.characters||0)+' 字符\n完整原始回复会在本次请求结束后保存。';return}
+  if(rawId!==record.id){rawId=record.id;$('raw').textContent='正在读取…';
+   try{const response=await fetch('raw/'+record.id);const text=await response.text();if(rawId===record.id)$('raw').textContent=text||'尚未收到正文。'}
+   catch(e){$('raw').textContent='无法读取原始回复。'}}
+  return;
+ }
+ if(record.status==='complete'){
+  $('art').hidden=false;if(detailVersion!==record.id){detailVersion=record.id;$('art').src='artwork/'+record.id}
+ }else{
+  $('message').hidden=false;$('message').className=record.status==='failed'?'failed':'';
+  $('message').textContent=record.status==='running'?'正在生成 · 已收到 '+(record.characters||0)+' 字符\n完成后自动显示预览。':record.error+'\n\n可切换「原始回复」查看具体内容。';
+ }
+}
+async function removeRecord(record){
+ try{const response=await fetch('api/runs/'+record.id,{method:'DELETE'});if(!response.ok)throw Error();
+ if(selected===record.id){selected='';detailVersion='';$('art').src='about:blank'}await poll(false);
+ $('notice').textContent=record.status==='running'?'记录已移除；已经发出的请求会继续完成。':'';
+ }catch(e){$('notice').textContent='移除失败，请重试。'}
+}
+function renderRecords(){
+ const root=$('records'),ids=new Set(records.map(r=>r.id));
+ for(const [id,card]of cards){if(!ids.has(id)){card.remove();cards.delete(id)}}
+ root.querySelector('.empty')?.remove();
+ if(!records.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='暂无记录\n选中模型后开始测试';root.append(empty)}
+ let cursor=root.firstChild;
+ for(const record of records){
+ let card=cards.get(record.id);
+ if(!card){card=document.createElement('article');card.className='record';card.dataset.run=record.id;card.tabIndex=0;
+ card.innerHTML='<div class="row-head"><div class="identity"><div class="model"></div><div class="provider"></div></div><button class="delete" aria-label="移除记录" title="移除记录">×</button></div><div class="preview-row"><div><div class="status"></div><div class="time"></div></div><div class="preview"></div></div>';
+ cards.set(record.id,card)}
+ card.classList.toggle('active',record.id===selected);card.onclick=()=>selectRecord(record.id);
+ card.oncontextmenu=event=>showRecordMenu(event,record,card);
+ card.onkeydown=event=>{if(event.target!==card)return;if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){const rect=card.getBoundingClientRect();showRecordMenu({preventDefault:()=>event.preventDefault(),stopPropagation:()=>event.stopPropagation(),clientX:rect.left+12,clientY:rect.top+12},record,card)}};
+ card.querySelector('.delete').onclick=e=>{e.stopPropagation();removeRecord(record)};
+ card.querySelector('.model').textContent=record.model;card.querySelector('.model').title=record.model;
+ card.querySelector('.provider').textContent=record.provider;card.querySelector('.provider').title=record.provider;
+ card.querySelector('.time').textContent=record.created.replace('T',' ').slice(5,16);
+ const status=card.querySelector('.status');status.className='status'+(record.status==='failed'?' failed':'');
+ status.textContent=record.status==='complete'?'已生成':record.status==='running'?'生成中 · '+(record.characters||0)+' 字符':'未生成作品';
+ status.title=record.error||'';
+ const area=card.querySelector('.preview');
+ if(area.dataset.status!==record.status){area.dataset.status=record.status;area.replaceChildren();
+ if(record.status==='complete'){const thumb=document.createElement('div');thumb.className='thumb';
+ const frame=document.createElement('iframe');frame.setAttribute('sandbox','');frame.setAttribute('draggable','false');frame.title=record.model+' 缩略预览';frame.referrerPolicy='no-referrer';
+ frame.loading='lazy';frame.src='artwork/'+record.id;thumb.append(frame);area.append(thumb)}}
+ if(card!==cursor)root.insertBefore(card,cursor);cursor=card.nextSibling;
+ }
+ const active=records.filter(r=>r.status==='running').length;$('count').textContent=records.length+' 条'+(active?' · '+active+' 生成中':'');
+}
+async function poll(schedule=true){
+ const requestedVersion=editVersion;
+ try{const [runsResponse,contextResponse]=await Promise.all([fetch('api/runs',{cache:'no-store'}),fetch('api/context',{cache:'no-store'})]);
+ if(!runsResponse.ok||!contextResponse.ok)throw Error();records=await runsResponse.json();const incoming=await contextResponse.json();
+ if(requestedVersion!==editVersion||editVersion!==savedVersion||savePromise){incoming.pelican_tokens=context.pelican_tokens;incoming.pelican_reasoning=context.pelican_reasoning;incoming.pelican_timeout=context.pelican_timeout}context=incoming;
+ if(!records.some(r=>r.id===selected)){selected=records[0]?.id||'';rawMode=false;rawId=''}
+ if(menuRun&&!records.some(r=>r.id===menuRun))closeRecordMenu();
+ updateSelection();renderRecords();await renderDetail();
+ }catch(error){$('notice').textContent='预览连接已断开。请点击主界面的「查看作品」重新加载。'}
+ if(schedule)setTimeout(poll,800);
+}
+for(const eventName of ['dragstart','dragover','drop']){
+ document.addEventListener(eventName,event=>event.preventDefault(),true);
+}
+poll();
+</script></body></html>
