@@ -66,6 +66,70 @@ class PelicanTests(unittest.TestCase):
             self.assertEqual(len(restored.list_runs()), 3)
             self.assertTrue(all(r["status"] == "complete" for r in restored.list_runs()))
 
+    def test_context_probe_protocols_scores_usage_and_isolation(self):
+        from context_test import make_probe, score_probe, parse_lengths, input_tokens
+        self.assertEqual(parse_lengths("4096，2048,4096"), [2048, 4096])
+        for invalid in ("", "1000", "8000001", "2k"):
+            with self.assertRaises(ValueError):
+                parse_lengths(invalid)
+        prompt, probe = make_probe(8192, 123)
+        self.assertEqual(len(prompt), 8192)
+        self.assertEqual(make_probe(8192, 123), (prompt, probe))
+        for name, offset in probe["offsets"].items():
+            self.assertIn(probe["expected"][name], prompt[offset:offset + 80])
+            self.assertNotIn(probe["expected"][name], prompt.split("</资料>")[-1])
+        self.assertEqual(score_probe(json.dumps(probe["expected"]), probe)["correct"], 3)
+        swapped = dict(probe["expected"])
+        swapped["front"], swapped["middle"] = swapped["middle"], swapped["front"]
+        self.assertEqual(score_probe(json.dumps(swapped), probe)["correct"], 1)
+        self.assertEqual(score_probe(" ".join(probe["expected"].values()), probe)["correct"], 0)
+        self.assertEqual(input_tokens({"usage": {"input_tokens": 10, "cache_read_input_tokens": 20}}), 30)
+        self.assertIsNone(input_tokens({"usage": {"input_tokens": "123"}}))
+        for protocol in api_tester.PROTOCOLS:
+            cli = api_tester.ApiClient(self.base, "sk-test", protocol=protocol,
+                                       profile="claude-code" if protocol == "anthropic" else "default")
+            original_request = cli.request
+            requests = []
+            def capture(path, body):
+                requests.append(body)
+                return original_request(path, body)
+            with patch.object(cli, "request", side_effect=capture):
+                result = cli.test_context("mock-small", 8192, seed=123)
+                capacity = cli.test_context("mock-small", 4096, retrieval=False)
+            self.assertTrue(result["accepted"], result)
+            self.assertEqual(result["score"]["correct"], 3)
+            self.assertEqual(result["input_tokens"], 9)
+            self.assertTrue(capacity["accepted"])
+            self.assertIsNone(capacity["score"])
+            self.assertEqual(capacity["response"], "OK")
+            for body in requests:
+                messages = body.get("messages", body.get("input"))
+                self.assertEqual(len(messages), 1)
+                self.assertEqual(messages[0]["role"], "user")
+                self.assertNotIn("tools", body)
+                self.assertNotIn("image_url", json.dumps(body))
+
+    def test_context_distinguishes_limit_rejection_failure_and_truncation(self):
+        cli = api_tester.ApiClient(self.base, "sk-test")
+        cases = [
+            (api_tester.ApiResult(False, 400, None, '{"error":"maximum context length exceeded"}', error="HTTP 400"), False, True),
+            (api_tester.ApiResult(False, 401, None, '{"error":"Invalid API key"}', error="HTTP 401"), False, False),
+            (api_tester.ApiResult(True, 200, {"choices": [{"message": {"content": "{}"}, "finish_reason": "length"}]}, "{}"), True, False),
+        ]
+        for response, accepted, rejected in cases:
+            with patch.object(cli, "request", return_value=response):
+                result = cli.test_context("mock-small", 2048)
+            self.assertEqual(result["accepted"], accepted)
+            self.assertEqual(result["limit_rejected"], rejected)
+            self.assertIsNone(result["score"])
+            self.assertTrue(result["error"])
+        stopped = threading.Event()
+        stopped.set()
+        with patch.object(cli, "request") as request:
+            with self.assertRaises(InterruptedError):
+                cli.test_context("mock-small", 2048, cancel_event=stopped)
+            request.assert_not_called()
+
     def test_custom_svg_prompt_is_sent_verbatim_and_fixed_prompt_is_unchanged(self):
         import hashlib
         self.assertEqual(hashlib.sha256(PELICAN_PROMPT.encode()).hexdigest(),
@@ -643,6 +707,162 @@ class GuiPersistenceTests(unittest.TestCase):
                 self.assertEqual([w.get() for w in entries], ["65536", "720"])
                 self.assertEqual(self.combo(root, "鹈鹕测试").get(), "高")
             self.run_gui(settings, restored)
+
+    def test_context_gui_explicit_start_serial_stop_export_and_restart(self):
+        import context_ui
+        server = ThreadingHTTPServer(("127.0.0.1", 0), mock_server.H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                settings = Path(directory) / "settings.json"
+                settings.write_text(json.dumps({"base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                                                "api_key": "sk-test"}), encoding="utf-8")
+                panels, requests = [], []
+                panel_type = context_ui.ContextPanel
+                original = api_tester.ApiClient.test_context
+                gate, started = threading.Event(), threading.Event()
+                pause = [False]
+                miss = [False]
+                def capture(client, *args, **kwargs):
+                    requests.append((args, kwargs))
+                    if pause[0]:
+                        result = original(client, *args, **kwargs)
+                        started.set()
+                        gate.wait(5)
+                        return result
+                    result = original(client, *args, **kwargs)
+                    if miss[0]:
+                        result["score"]["hits"]["middle"] = False
+                        result["score"]["correct"] = 2
+                    return result
+                def factory(*args, **kwargs):
+                    panel = panel_type(*args, **kwargs)
+                    panels.append(panel)
+                    return panel
+                def pump(root, predicate):
+                    deadline = time.monotonic() + 8
+                    while not predicate() and time.monotonic() < deadline:
+                        root.update()
+                        time.sleep(0.01)
+                    self.assertTrue(predicate())
+                    root.update()
+                def first(root):
+                    self.add_model_ids(root, "mock-small,mock-large")
+                    model_tree = self.model_tree(root)
+                    model_tree.selection_set(model_tree.get_children())
+                    self.press(root, "上下文测试")
+                    panel = panels[-1]
+                    self.assertEqual(requests, [])
+                    panel.vars["lengths"].set("4096,2048")
+                    panel.vars["max_tokens"].set("8192")
+                    panel.vars["timeout"].set("270")
+                    panel.vars["reasoning"].set("低")
+                    self.press(root, "开始上下文测试")
+                    pump(root, lambda: not panel.running)
+                    self.assertEqual(len(panel.results), 4)
+                    self.assertTrue(all(r["score"]["correct"] == 3 for r in panel.results))
+                    self.assertEqual([r["characters"] for r in panel.results], [2048, 4096] * 2)
+                    self.assertEqual([r["seed"] for r in panel.results[:2]], [r["seed"] for r in panel.results[2:]])
+                    self.assertEqual(len(requests), 4)
+                    filename = Path(directory) / "context-results.json"
+                    with patch("context_ui.filedialog.asksaveasfilename", return_value=str(filename)):
+                        self.press(root, "导出上下文结果")
+                    self.assertEqual(len(json.loads(filename.read_text(encoding="utf-8"))), 4)
+                    self.assertNotIn("sk-test", filename.read_text(encoding="utf-8"))
+                    # Stop with a request in flight: keep its result, but never
+                    # submit the next model/length after it returns.
+                    pause[0] = True
+                    self.press(root, "开始上下文测试")
+                    pump(root, started.is_set)
+                    self.press(root, "停止后续请求")
+                    gate.set()
+                    pump(root, lambda: not panel.running)
+                    self.assertEqual(len(requests), 5)
+                    self.assertEqual(len(panel.results), 5)
+                    pause[0], miss[0] = False, True
+                    self.press(root, "开始上下文测试")
+                    pump(root, lambda: not panel.running)
+                    self.assertEqual(len(requests), 7, "A retrieval miss must stop that model's later lengths")
+                    panel.continue_var.set(True)
+                    self.press(root, "开始上下文测试")
+                    pump(root, lambda: not panel.running)
+                    self.assertEqual(len(requests), 11, "Continue option must test all configured lengths")
+                    panel.continue_var.set(False)
+                    panel.vars["mode"].set("仅接收长度")
+                def second(root):
+                    panel = panels[-1]
+                    self.assertEqual(panel.options(), {"lengths": "4096,2048", "max_tokens": "8192", "timeout": "270",
+                        "reasoning": "低", "mode": "仅接收长度", "continue_on_miss": False})
+                    self.press(root, "上下文测试")
+                    self.assertEqual(len(requests), 11)
+                with patch("context_ui.ContextPanel", side_effect=factory), \
+                        patch.object(api_tester.ApiClient, "test_context", capture):
+                    self.run_gui(settings, first)
+                    self.run_gui(settings, second)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_svg_template_management_and_restart_without_generating(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "settings.json"
+            previews = []
+            def factory(*args, **kwargs):
+                preview = PelicanPreview(*args, **kwargs)
+                previews.append(preview)
+                return preview
+
+            def post(root, payload):
+                result, done = {}, threading.Event()
+                def request():
+                    try:
+                        req = urllib.request.Request(previews[-1].url + "api/settings",
+                            data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+                        try:
+                            response = urllib.request.urlopen(req, timeout=8)
+                        except urllib.error.HTTPError as exc:
+                            response = exc
+                        with response:
+                            result.update(json.load(response))
+                    finally:
+                        done.set()
+                threading.Thread(target=request, daemon=True).start()
+                deadline = time.monotonic() + 9
+                while not done.is_set() and time.monotonic() < deadline:
+                    root.update()
+                    time.sleep(0.01)
+                self.assertTrue(done.is_set())
+                return result
+
+            prompt = "完整 SVG 星球\n  保留缩进和空格  "
+            def first(root):
+                self.press(root, "查看作品")
+                reply = post(root, {"template_action": "save", "template_name": "星球", "template_prompt": prompt})
+                self.assertEqual(reply.get("templates"), {"星球": prompt})
+                post(root, {"template_action": "save", "template_name": "临时", "template_prompt": "SVG"})
+                reply = post(root, {"template_action": "rename", "template_name": "星球", "template_target": "临时"})
+                self.assertIn("error", reply)
+                reply = post(root, {"template_action": "rename", "template_name": "星球", "template_target": "行星"})
+                self.assertEqual(reply["templates"]["行星"], prompt)
+                reply = post(root, {"template_action": "delete", "template_name": "临时"})
+                self.assertEqual(reply.get("templates"), {"行星": prompt})
+                reply = post(root, {"template_action": "save", "template_name": "", "template_prompt": "SVG"})
+                self.assertIn("error", reply)
+                self.assertEqual(json.loads(settings.read_text(encoding="utf-8"))["svg_templates"], {"行星": prompt})
+                self.assertEqual(previews[-1].store.list_runs(), [])
+
+            def second(root):
+                self.press(root, "查看作品")
+                with urllib.request.urlopen(previews[-1].url + "api/context") as response:
+                    self.assertEqual(json.load(response)["templates"], {"行星": prompt})
+                self.assertEqual(previews[-1].store.list_runs(), [])
+            with patch.object(api_tester, "PELICAN_RESULTS_PATH", Path(directory) / "results"), \
+                    patch.object(api_tester, "PelicanPreview", side_effect=factory), \
+                    patch.object(PelicanPreview, "embed"), \
+                    patch.object(api_tester.ApiClient, "test_chat") as chat:
+                self.run_gui(settings, first)
+                self.run_gui(settings, second)
+                chat.assert_not_called()
 
     def test_gui_multimodel_pelican_action(self):
         server = ThreadingHTTPServer(("127.0.0.1", 0), mock_server.H)

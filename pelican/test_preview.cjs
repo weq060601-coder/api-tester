@@ -9,6 +9,7 @@ function element(id) {
   if (!elements.has(id)) elements.set(id, {
     value: '', dataset: {}, textContent: '', addEventListener() {},
     getAttribute(name) {return this[name];},
+    children: [], replaceChildren() {this.children=[];}, append(child) {this.children.push(child);},
     classList: {toggle() {}},
     checkValidity() { return Number.isInteger(Number(this.value)) && Number(this.value) >= (id === 'limit' ? 256 : 1); },
   });
@@ -27,8 +28,8 @@ menu.querySelector = selector => selector === 'button:not(:disabled)'
 menu.querySelectorAll = () => menuButtons.filter(button => !button.disabled);
 let release;
 const context = vm.createContext({
-  document: {getElementById: element, addEventListener() {}},
-  window: {innerWidth: 800, innerHeight: 600, addEventListener() {}},
+  document: {getElementById: element, addEventListener() {}, createElement: () => ({})},
+  window: {innerWidth: 800, innerHeight: 600, addEventListener() {}, confirm: () => true},
   setTimeout, clearTimeout,requestAnimationFrame: () => 1,
   fetch: async (url, request) => {
     if (url.endsWith('/open')) {
@@ -87,6 +88,38 @@ async function main() {
   await assert.rejects(vm.runInContext('saveOptions()', context));
   assert.equal(writes.length, 4);
   assert.equal(element('save-status').textContent, '保存失败');
+  // Named templates persist separately from autosave, and using one only fills
+  // the editor. A delayed old context response must not clobber a mutation.
+  vm.runInContext("$('limit').value='32768';changed()", context);
+  await vm.runInContext('saveOptions()', context);
+  const originalFetch = context.fetch;
+  const templateWrites = [];
+  let savedTemplates = {};
+  context.fetch = async (url, request) => {
+    assert.equal(url, 'api/settings');
+    const payload = JSON.parse(request.body);
+    if (!payload.template_action) return originalFetch(url, request);
+    templateWrites.push(payload);
+    const {template_action:action,template_name:name,template_target:target} = payload;
+    if(action==='save')savedTemplates[name]=payload.template_prompt;
+    if(action==='rename'){savedTemplates[target]=savedTemplates[name];delete savedTemplates[name];}
+    if(action==='delete')delete savedTemplates[name];
+    return {ok:true,json:async()=>({saved:true,templates:{...savedTemplates}})};
+  };
+  vm.runInContext("$('template-name').value='旋转星球'", context);
+  await vm.runInContext("changeTemplate('save')", context);
+  assert.equal(savedTemplates['旋转星球'], '画一个旋转的 SVG 星球');
+  assert.equal(element('template-list').value, '旋转星球');
+  vm.runInContext("$('custom-prompt').value='别的草稿';useTemplate()", context);
+  assert.equal(element('custom-prompt').value, '画一个旋转的 SVG 星球');
+  assert.equal(element('custom-editor').hidden, false);
+  vm.runInContext("$('template-name').value='星球二'", context);
+  await vm.runInContext("changeTemplate('rename')", context);
+  assert.deepEqual(Object.keys(savedTemplates), ['星球二']);
+  await vm.runInContext("changeTemplate('delete')", context);
+  assert.deepEqual(savedTemplates, {});
+  assert.deepEqual(templateWrites.map(p=>p.template_action), ['save','rename','delete']);
+  context.fetch = originalFetch;
   // Right-click menus stay inside the viewport and address the clicked card.
   vm.runInContext(`records=[{id:'abc',status:'complete'},{id:'running',status:'running'}];
     showRecordMenu({preventDefault(){},stopPropagation(){},clientX:799,clientY:599},records[0],null)`, context);

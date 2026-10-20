@@ -14,9 +14,10 @@ button:hover{background:#2a3441}button:disabled{color:#6e7681;cursor:default}but
 .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #2a3341;flex-shrink:0;min-width:0}
 .selection{min-width:160px;flex:1}.caption{font-size:12px;color:#2dd4bf;margin-bottom:4px}.muted{color:#8b949e;font-size:11px}
 #selection{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.prompt-panel{padding:8px 12px;border-bottom:1px solid #2a3341;flex-shrink:0}
+.prompt-panel{padding:8px 12px;border-bottom:1px solid #2a3341;flex-shrink:0;max-height:45vh;overflow-y:auto}
 .prompt-panel summary{cursor:pointer;color:#8b949e;font-size:12px}
 .prompt-mode{display:flex;gap:6px;margin:8px 0;align-items:center;flex-wrap:wrap}
+.templates{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}.templates input,.templates select{min-width:0;max-width:220px;padding:5px 7px;border:1px solid #3b4656;border-radius:4px;background:#0d1117;color:#e6edf3;font:inherit}.templates button{padding:5px 8px;font-size:12px}.templates input{width:150px}.templates select{width:180px}
 .prompt-mode button.active{border-color:#2dd4bf;color:#2dd4bf}
 #custom-prompt{width:100%;height:82px;resize:vertical;max-height:180px;min-height:50px;padding:8px;border:1px solid #3b4656;border-radius:4px;background:#0d1117;color:#e6edf3;font:12px "Microsoft YaHei UI",sans-serif}
 .pelican-controls{display:flex;align-items:center;gap:6px;flex-shrink:0;min-width:0;color:#8b949e;font-size:11px;white-space:nowrap}
@@ -63,7 +64,7 @@ footer{flex-shrink:0;border-top:1px solid #2a3341;color:#6e7681;font-size:10px;p
 <button id="generate" class="primary" disabled>生成选中模型</button></div>
 <details class="prompt-panel" id="prompt-panel"><summary id="prompt-summary">提示词 · 固定鹈鹕题目</summary>
 <div class="prompt-mode"><button id="fixed-prompt" type="button" class="active">固定鹈鹕题目</button><button id="custom-mode" type="button">自定义 SVG</button><span class="muted">切换和编辑自动保存，点击开始生成才发送请求</span></div>
-<div id="custom-editor" hidden><textarea id="custom-prompt" maxlength="12000" placeholder="输入完整的 SVG 绘图提示词；内容会原样发送。预览支持 SVG/HTML 与 CSS 动画。" spellcheck="false"></textarea><div class="muted">请要求输出完整 SVG 或含 SVG 的 HTML；预览允许 CSS/SVG 动画，禁用脚本和外部资源。</div></div></details>
+<div id="custom-editor" hidden><div class="templates"><select id="template-list" aria-label="SVG 快捷模板"><option value="">选择快捷模板</option></select><button id="template-use" type="button">填入提示词</button><input id="template-name" maxlength="80" placeholder="模板名称" aria-label="模板名称"><button id="template-save" type="button">保存为模板</button><button id="template-rename" type="button">重命名</button><button id="template-delete" type="button">删除模板</button><span id="template-status" class="muted" role="status"></span></div><textarea id="custom-prompt" maxlength="12000" placeholder="输入完整的 SVG 绘图提示词；内容会原样发送。预览支持 SVG/HTML 与 CSS 动画。" spellcheck="false"></textarea><div class="muted">请要求输出完整 SVG 或含 SVG 的 HTML；预览允许 CSS/SVG 动画，禁用脚本和外部资源。</div></div></details>
 <div id="notice" role="status"></div>
 <main><section class="history"><div class="list-head"><span>测试记录</span><span id="count"></span></div><div id="records"></div></section>
 <section class="detail"><div class="detail-head"><span id="title">作品预览</span><button id="animation" class="active">动画</button><button id="source">原始回复</button></div>
@@ -81,6 +82,30 @@ footer{flex-shrink:0;border-top:1px solid #2a3341;color:#6e7681;font-size:10px;p
 const $=id=>document.getElementById(id), cards=new Map();
 let context={providers:[],selected_models:[],pelican_reasoning:'默认',pelican_tokens:'32768',pelican_timeout:'180'},records=[],selected='',detailVersion='',rawId='',rawMode=false,submitting=false,controlsSettings='';
 let editVersion=0,savedVersion=0,saveTimer=0,savePromise=null;
+let templates={},templatesKey='',templateVersion=0,templateBusy=false;
+function renderTemplates(){
+ const signature=JSON.stringify(templates);if(signature===templatesKey)return;templatesKey=signature;
+ const list=$('template-list'),selected=list.value;list.replaceChildren();
+ for(const name of ['',...Object.keys(templates)]){const option=document.createElement('option');option.value=name;option.textContent=name||'选择快捷模板';list.append(option)}
+ list.value=Object.hasOwn(templates,selected)?selected:'';
+}
+function useTemplate(){const name=$('template-list').value;if(!Object.hasOwn(templates,name))return;$('custom-prompt').value=templates[name];$('template-name').value=name;choosePromptMode(true);$('template-status').textContent='已填入，点击开始生成才发送请求'}
+$('template-use').onclick=useTemplate;
+$('template-list').addEventListener('change',()=>{$('template-name').value=$('template-list').value;useTemplate()});
+async function changeTemplate(action){
+ if(templateBusy)return;templateBusy=true;templateVersion++;$('template-status').textContent='保存中…';
+ for(const id of ['template-save','template-rename','template-delete'])$(id).disabled=true;
+ try{
+  await saveOptions();const chosen=$('template-list').value,name=$('template-name').value.trim();
+  if(action==='save'&&Object.hasOwn(templates,name)&&!window.confirm('覆盖模板「'+name+'」？')){$('template-status').textContent='已取消';return}
+  if(action==='delete'&&!window.confirm('删除模板「'+chosen+'」？')){$('template-status').textContent='已取消';return}
+  const payload={template_action:action,template_name:action==='save'?name:chosen,template_target:name,template_prompt:$('custom-prompt').value};
+  const response=await fetch('api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const result=await response.json();if(!response.ok)throw Error(result.error||'模板保存失败');
+  templates=result.templates;context.templates=templates;renderTemplates();$('template-list').value=action==='delete'?'':name;$('template-name').value=action==='delete'?'':name;$('template-status').textContent='已保存';
+ }catch(error){$('template-status').textContent=error.message}finally{templateBusy=false;templateVersion++;for(const id of ['template-save','template-rename','template-delete'])$(id).disabled=false}
+}
+for(const action of ['save','rename','delete'])$('template-'+action).onclick=()=>changeTemplate(action);
 let pageActive=true,pollTimer=0,pollPromise=null,recordsVersion='',detailState='',thumbTick=0;
 const THUMB_LIMIT=4;
 function releaseArtwork(){const art=$('art');if(art.getAttribute('src')&&art.getAttribute('src')!=='about:blank')art.src='about:blank';detailVersion=''}
@@ -257,8 +282,10 @@ function renderRecords(){
 }
 async function pollOnce(){
  const requestedVersion=editVersion;
+ const requestedTemplates=templateVersion;
  try{const contextResponse=await fetch('api/context',{cache:'no-store'});
  if(!contextResponse.ok)throw Error();const incoming=await contextResponse.json();
+ if(!templateBusy&&requestedTemplates===templateVersion){templates=incoming.templates||{};renderTemplates()}else incoming.templates=templates;
  setPageActive(incoming.active!==false);
  if(requestedVersion!==editVersion||editVersion!==savedVersion||savePromise){incoming.pelican_tokens=context.pelican_tokens;incoming.pelican_reasoning=context.pelican_reasoning;incoming.pelican_timeout=context.pelican_timeout;incoming.prompt_mode=context.prompt_mode;incoming.custom_prompt=context.custom_prompt}context=incoming;
  if(!pageActive)return;

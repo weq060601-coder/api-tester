@@ -417,7 +417,8 @@ class PelicanPreview:
 
     def set_sources(self, sources: dict, selected_provider: str, selected_models: list,
                     reasoning_label: str = "默认", max_tokens: str = str(PELICAN_DEFAULT_MAX_TOKENS),
-                    timeout: str = "180", prompt_mode: str = "fixed", custom_prompt: str = ""):
+                    timeout: str = "180", prompt_mode: str = "fixed", custom_prompt: str = "",
+                    templates: dict | None = None):
         with self.context_lock:
             self.sources = sources
             self.context = {
@@ -427,6 +428,7 @@ class PelicanPreview:
                 "pelican_reasoning": reasoning_label, "pelican_tokens": str(max_tokens),
                 "pelican_timeout": str(timeout),
                 "prompt_mode": prompt_mode, "custom_prompt": custom_prompt,
+                "templates": dict(templates or {}),
             }
 
     def get_source(self, source_id: str):

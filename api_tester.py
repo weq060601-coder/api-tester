@@ -35,6 +35,7 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from context_test import make_probe, score_probe, input_tokens, completion_error
 
 from pelican import (PELICAN_DEFAULT_MAX_TOKENS, PELICAN_SETTINGS_VERSION, PELICAN_PROMPT, RESULTS_PATH,
                      PelicanPreview, PelicanStore, migrate_legacy_files,
@@ -495,6 +496,32 @@ class ApiClient:
         if effort:
             body["reasoning_effort"] = effort
         return body
+
+    def test_context(self, model: str, characters: int, *, retrieval: bool = True,
+                     max_tokens: int = 4096, reasoning_effort: str = "", seed: int | None = None,
+                     cancel_event=None) -> dict:
+        prompt, probe = make_probe(characters, seed, retrieval=retrieval)
+        body = self.chat_body(model, prompt, False, max_tokens, 0.0, False, reasoning_effort)
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("上下文测试已停止")
+        result = self.request(self.chat_path(), body)
+        data = result.data if isinstance(result.data, dict) else {}
+        text = extract_content(data) or ""
+        output_error = completion_error(data) if result.ok else ""
+        if result.ok and not text and not output_error:
+            output_error = "响应没有最终正文"
+        error = result.error or output_error
+        limit_rejected = not result.ok and result.status in (400, 413, 422) and bool(re.search(
+            r"context.{0,40}(length|window|limit)|maximum.{0,30}(token|context)|too (many|long|large)|"
+            r"(token|input|prompt).{0,40}(exceed|limit)|上下文|输入.{0,20}(过长|超出)",
+            result.text, re.I))
+        score = score_probe(text, probe) if retrieval and result.ok and not output_error else None
+        return {"model": model, "mode": "both" if retrieval else "capacity", **probe,
+                "accepted": result.ok, "http_status": result.status,
+                "input_tokens": input_tokens(data), "elapsed": result.elapsed,
+                "score": score, "error": error, "limit_rejected": limit_rejected,
+                "response": text or result.text, "raw_response": result.text,
+                "max_tokens": max_tokens, "reasoning": reasoning_effort, "timeout": self.timeout}
 
     def test_embedding(self, model: str, text: str = "ping") -> ApiResult:
         return self.request("/embeddings", {"model": model, "input": text})
@@ -1186,6 +1213,8 @@ def build_gui():  # noqa: C901
     preview_hint = tk.Label(preview_host, text="正在加载内嵌鹈鹕预览…", bg=C["card"], fg=C["muted"],
                             font=F["ui"], justify="center", wraplength=px(360))
     preview_hint.place(relx=0.5, rely=0.5, anchor="center")
+    context_tab = ttk.Frame(nb, style="Card.TFrame")
+    nb.add(context_tab, text="上下文测试")
     for tag, color in (("ok", C["ok"]), ("err", C["err"]), ("warn", C["warn"]), ("info", C["fg"]),
                        ("dim", C["muted"]), ("req", C["acc"]), ("ts", C["dim"])):
         log_txt.tag_configure(tag, foreground=color)
@@ -1230,6 +1259,8 @@ def build_gui():  # noqa: C901
                 elif kind == "preview_ready":
                     state["preview_loading"] = False
                     preview_hint.place_forget()
+                elif kind in ("context_progress", "context_result", "context_done", "context_error"):
+                    context_panel.handle(kind, rest[0])
                 elif kind == "pelican_settings":
                     options, done, reply = rest
                     try:
@@ -1242,10 +1273,32 @@ def build_gui():  # noqa: C901
                                                ("custom_prompt", "svg_custom_prompt")):
                             if key in options:
                                 state[state_key] = options[key]
+                        if "template_action" in options:
+                            templates = dict(state.get("svg_templates", {}))
+                            action, name = options["template_action"], options["template_name"]
+                            if action == "save":
+                                if name not in templates and len(templates) >= 100:
+                                    raise ValueError("最多保存 100 个模板")
+                                templates[name] = options["template_prompt"]
+                            elif action == "delete":
+                                if name not in templates:
+                                    raise ValueError("模板不存在")
+                                del templates[name]
+                            else:
+                                target = options["template_target"]
+                                if name not in templates or target in templates:
+                                    raise ValueError("原模板不存在或新名称已被使用")
+                                templates[target] = templates.pop(name)
+                            previous = state.get("svg_templates", {})
+                            state["svg_templates"] = templates
                         if save_now() is False:
+                            if "template_action" in options:
+                                state["svg_templates"] = previous
                             raise OSError("设置写入失败，请查看日志")
                         sync_pelican_sources()
                         reply["saved"] = True
+                        if "template_action" in options:
+                            reply["templates"] = dict(state["svg_templates"])
                     except Exception as exc:
                         reply["error"] = str(exc)
                     finally:
@@ -1534,6 +1587,8 @@ def build_gui():  # noqa: C901
             "pelican_timeout": pelican_timeout_var.get(),
             "svg_prompt_mode": state.get("svg_prompt_mode", "fixed"),
             "svg_custom_prompt": state.get("svg_custom_prompt", ""),
+            "svg_templates": state.get("svg_templates", {}),
+            "context_test": context_panel.options(),
             "providers": providers, "named_keys": state.get("named_keys", {}),
             "active_provider": provider_box.get(), "active_key": key_box.get(),
             "profile": profile_box.get(), "protocol": protocol_box.get(),
@@ -1580,6 +1635,13 @@ def build_gui():  # noqa: C901
         state["svg_prompt_mode"] = "custom" if data.get("svg_prompt_mode") == "custom" else "fixed"
         custom = data.get("svg_custom_prompt", "")
         state["svg_custom_prompt"] = custom if isinstance(custom, str) and len(custom) <= 12000 else ""
+        templates = data.get("svg_templates", {})
+        state["svg_templates"] = {name: text for name, text in templates.items()
+                                  if isinstance(name, str) and 0 < len(name) <= 80
+                                  and isinstance(text, str) and 0 < len(text) <= 12000
+                                  } if isinstance(templates, dict) else {}
+        state["svg_templates"] = dict(list(state["svg_templates"].items())[:100])
+        context_panel.load_options(data.get("context_test", {}))
         if isinstance(data.get("insecure"), bool):
             insecure_var.set(data["insecure"])
         if isinstance(data.get("stream"), bool):
@@ -1882,6 +1944,7 @@ def build_gui():  # noqa: C901
         uiq.put(("busy", busy, note))
 
     def apply_busy(busy: bool, note: str):
+        context_panel.set_external_busy(busy)
         for b in action_btns:
             b.configure(state="disabled" if busy else "normal")
         if busy:
@@ -2141,7 +2204,8 @@ def build_gui():  # noqa: C901
         selected_models = [tree.set(i, "model") for i in tree.selection()]
         preview.set_sources(sources, selected_provider, selected_models,
                             pelican_reasoning_var.get(), pelican_tokens_var.get(), pelican_timeout_var.get(),
-                            state.get("svg_prompt_mode", "fixed"), state.get("svg_custom_prompt", ""))
+                            state.get("svg_prompt_mode", "fixed"), state.get("svg_custom_prompt", ""),
+                            state.get("svg_templates", {}))
 
     def save_pelican_options(payload):
         """Validate in the HTTP thread; apply and save only in the Tk thread."""
@@ -2168,6 +2232,21 @@ def build_gui():  # noqa: C901
             if not isinstance(value, str) or len(value) > 12000:
                 raise ValueError("自定义 SVG 提示词须为不超过 12000 字的文本")
             options["custom_prompt"] = value
+        if "template_action" in payload:
+            action = payload["template_action"]
+            if action not in ("save", "rename", "delete"):
+                raise ValueError("无效的模板操作")
+            options["template_action"] = action
+            for key in ("template_name", "template_target") if action == "rename" else ("template_name",):
+                value = payload.get(key)
+                if not isinstance(value, str) or not value.strip() or len(value.strip()) > 80:
+                    raise ValueError("模板名称须为 1 至 80 个字符")
+                options[key] = value.strip()
+            if action == "save":
+                value = payload.get("template_prompt")
+                if not isinstance(value, str) or not value.strip() or len(value) > 12000:
+                    raise ValueError("模板提示词须为 1 至 12000 个字符")
+                options["template_prompt"] = value
         if not options:
             raise ValueError("未提供可保存的参数")
         done, reply = threading.Event(), {}
@@ -2280,6 +2359,10 @@ def build_gui():  # noqa: C901
         """Open the page; only its Generate button submits model requests."""
         open_pelican_history()
 
+    def open_context():
+        set_config_visible(False)
+        nb.select(context_tab)
+
     def export():
         if not state["models"]:
             ui_log("[!] 没有可导出的结果", "warn")
@@ -2302,26 +2385,50 @@ def build_gui():  # noqa: C901
         ui_log(f"[OK] 已导出 {len(rows)} 行 -> {path}", "ok")
 
     # ---------------- 操作栏按钮 ----------------
-    btn_models = ttk.Button(bar, text="获取模型", style="Primary.TButton", command=act_models)
+    actions_bar = ttk.Frame(bar)
+    actions_bar.grid(row=0, column=0, sticky="w")
+    options_bar = ttk.Frame(bar)
+    options_bar.grid(row=0, column=1, sticky="ew")
+    bar.columnconfigure(1, weight=1)
+    btn_models = ttk.Button(actions_bar, text="获取模型", style="Primary.TButton", command=act_models)
     btn_models.pack(side="left")
-    btn_chat = ttk.Button(bar, text="测试连通性", style="Primary.TButton", command=act_chat)
+    btn_chat = ttk.Button(actions_bar, text="测试连通性", style="Primary.TButton", command=act_chat)
     btn_chat.pack(side="left", padx=(px(8), 0))
-    tk.Frame(bar, bg=C["line"], width=1).pack(side="left", fill="y", padx=px(12), pady=px(4))
-    btn_batch = ttk.Button(bar, text="批量测速", command=act_batch)
+    tk.Frame(actions_bar, bg=C["line"], width=1).pack(side="left", fill="y", padx=px(12), pady=px(4))
+    btn_batch = ttk.Button(actions_bar, text="批量测速", command=act_batch)
     btn_batch.pack(side="left")
-    btn_emb = ttk.Button(bar, text="Embedding", command=act_emb)
+    btn_emb = ttk.Button(actions_bar, text="Embedding", command=act_emb)
     btn_emb.pack(side="left", padx=(px(8), 0))
-    btn_image = ttk.Button(bar, text="鹈鹕测试", command=act_pelican)
+    btn_image = ttk.Button(actions_bar, text="鹈鹕测试", command=act_pelican)
     btn_image.pack(side="left", padx=(px(8), 0))
+    btn_context = ttk.Button(actions_bar, text="上下文测试", command=open_context)
+    btn_context.pack(side="left", padx=(px(8), 0))
     stream_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(bar, text="流式 SSE", variable=stream_var, style="Bar.TCheckbutton").pack(
+    ttk.Checkbutton(options_bar, text="流式 SSE", variable=stream_var, style="Bar.TCheckbutton").pack(
         side="left", padx=(px(16), 0))
     image_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(bar, text="附带测试图", variable=image_var, style="Bar.TCheckbutton").pack(
+    ttk.Checkbutton(options_bar, text="附带测试图", variable=image_var, style="Bar.TCheckbutton").pack(
         side="left", padx=(px(10), 0))
-    ttk.Button(bar, text="导出结果", command=export).pack(side="right")
-    prog = ttk.Progressbar(bar, mode="indeterminate", length=px(120), style="Busy.Horizontal.TProgressbar")
+    ttk.Button(options_bar, text="导出结果", command=export).pack(side="right")
+    prog = ttk.Progressbar(options_bar, mode="indeterminate", length=px(100), style="Busy.Horizontal.TProgressbar")
+    toolbar_wrapped = [None]
+    def fit_toolbar(_event=None):
+        wrap = bar.winfo_width() < actions_bar.winfo_reqwidth() + options_bar.winfo_reqwidth() + px(40)
+        if toolbar_wrapped[0] == wrap:
+            return
+        toolbar_wrapped[0] = wrap
+        options_bar.grid_configure(row=1 if wrap else 0, column=0 if wrap else 1,
+                                   columnspan=2 if wrap else 1, pady=(px(6), 0) if wrap else 0)
+    bar.bind("<Configure>", fit_toolbar)
+    options_bar.bind("<Configure>", fit_toolbar)
     action_btns = (btn_models, btn_chat, btn_batch, btn_emb, btn_image)
+
+    from context_ui import ContextPanel
+    context_panel = ContextPanel(context_tab, colors=C, font=F["mono"], client_factory=make_client,
+        models=lambda: [tree.set(i, "model") for i in tree.selection()],
+        source=lambda: {"provider": state.get("active_provider") or normalize_base(base_var.get()),
+                        "key_name": key_box.get() or "未命名 Key"},
+        emit=uiq.put, busy=set_busy, changed=schedule_save)
 
     # ---------------- 事件 ----------------
     def copy_model_id(iid=None, _event=None):
@@ -2350,6 +2457,7 @@ def build_gui():  # noqa: C901
         menu.add_command(label="  测试 Embedding", command=act_emb)
         menu.add_command(label="  打开鹈鹕测试页", command=act_pelican)
         menu.add_command(label="  查看鹈鹕作品", command=open_pelican_history)
+        menu.add_command(label="  打开上下文测试页", command=open_context)
         menu.add_command(label="  复制测试结果", command=lambda: (
             root.clipboard_clear(),
             root.clipboard_append("\n".join(" ".join(map(str, tree.item(i, "values")))
@@ -2366,8 +2474,12 @@ def build_gui():  # noqa: C901
     tree.bind("<Control-Insert>", lambda e: copy_model_id(_event=e))
     root.bind("<Control-Return>", lambda _e: act_chat())
     root.bind("<F5>", lambda _e: act_models())
-    nb.bind("<<NotebookTabChanged>>", lambda _e: open_pelican_history()
-            if nb.select() == str(pelican_tab) else set_config_visible(True))
+    def on_tab_changed(_event):
+        if nb.select() == str(pelican_tab):
+            open_pelican_history()
+        else:
+            set_config_visible(nb.select() != str(context_tab))
+    nb.bind("<<NotebookTabChanged>>", on_tab_changed)
 
     ui_log("=== API 测试台 ===", "ok")
     ui_log("1. 填 Base URL + API Key，手动添加模型 ID 或按 F5 获取模型", "info")
@@ -2394,6 +2506,7 @@ def build_gui():  # noqa: C901
     drain_log()
 
     def on_close():
+        context_panel.stop.set()
         for key in ("save_id", "drain_id"):
             pending = state.get(key)
             if pending:

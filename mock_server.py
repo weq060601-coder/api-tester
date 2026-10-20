@@ -6,6 +6,7 @@
    默认把每个请求的全部请求头打到 stdout, 用来核对客户端伪装是否生效。
 """
 import json
+import re
 import sys
 import threading
 import time
@@ -38,6 +39,24 @@ animation:spin 2s linear infinite}}@keyframes spin{{to{{transform:rotate(360deg)
 
 
 def response_text(body):
+    messages = body.get("messages", body.get("input", []))
+    fragments = []
+    for message in messages if isinstance(messages, list) else []:
+        content = message.get("content", "")
+        if isinstance(content, str):
+            fragments.append(content)
+        elif isinstance(content, list):
+            fragments.extend(block.get("text", "") for block in content if isinstance(block, dict))
+    prompt = "\n".join(fragments)
+    if "这是输入长度接收测试" in prompt:
+        return "OK"
+    if "这是长文本检索测试" in prompt:
+        identifiers = json.loads(re.findall(r'\{"front":.*?\}', prompt)[-1])
+        answers = {}
+        for name, identifier in identifiers.items():
+            match = re.search(re.escape(identifier) + r" value=([0-9a-f]+)", prompt)
+            answers[name] = match.group(1) if match else "NOT_FOUND"
+        return json.dumps(answers)
     if "用 SVG 画一个鹈鹕骑自行车" in json.dumps(body, ensure_ascii=False):
         model = body.get("model", "mock")
         return MOCK_PELICAN.format(model=model, color="#f05252" if model == "mock-small" else "#3b82f6")
