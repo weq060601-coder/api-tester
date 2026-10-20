@@ -148,6 +148,8 @@ python api_tester.py --base-url https://relay.example.com/v1 --api-key sk-xxx ^
 
 **鹈鹕测试隔离：** 每次模型只收到所选题目的一条用户消息，不上传同目录文件、参考 HTML、历史作品或其他模型回复，也不提供文件读取或工具调用。请求走所选文本协议的 Chat / Messages / Responses 接口，独立于 `/images/generations`；「附带测试图」不影响鹈鹕测试。内嵌预览区域在沙箱中渲染 SVG/CSS 动画，禁止生成内容执行脚本、读取文件或请求外部资源。
 
+**预览资源占用：** 只有右侧当前作品播放动画。列表只加载可见的静止缩略图，最多 4 张；滚出可见范围即卸载，保留卡片尺寸以避免列表跳动。缩略图由作品临时派生，不修改保存的作品或模型回复。查看原始回复时卸载右侧动画，切回日志/原始响应标签或最小化后卸载全部作品并挂起 WebView2，返回时自动恢复。空闲刷新间隔为 2.5 秒，生成中为 0.8 秒，隐藏时停止获取历史记录；数据未变时跳过列表和详情重绘。预览仍有 WebView2 运行时的基础内存开销。
+
 鹈鹕测试单独使用默认 `32768` 的输出上限和 `180` 秒超时，可在连接区或鹈鹕页顶部调整；同一行可选择推理强度「默认/低/中/高」。输出上限不等于模型总上下文容量。普通测试的超时、max_tokens 和鹈鹕测试的输出上限、推理强度、超时均记住最后一次手动设置，自动保存并在下次打开时恢复；仅没有保存值时使用初始默认值，不根据旧数值强制升级。内嵌页的三项参数修改后会显示保存状态，并同步到主界面，点生成前会确认保存成功。默认不额外发送推理参数；选择后，OpenAI Chat 使用 `reasoning_effort`，Responses 使用 `reasoning.effort`，Anthropic 使用 extended thinking budget。推理模型可能将输出预算用于构思；达到上限但没有最终代码时应提高输出上限或降低推理强度。程序现在识别三种协议的输出上限、中断和未完成事件，不把思考草稿算成完整作品。只有渐变/定义、没有实际图形的 SVG 也会明确报错，不再显示白屏。旧记录会按此规则重新校验，原始回复保持不变。
 
 每次结果保存到 `pelican/results/<独立编号>/`：`prompt.txt`、`response.txt`、`artwork.html`、`run.json`。失败时保留原始回复和具体原因，不使用预制鹈鹕代替。点「查看作品」或切换「鹈鹕测试」标签只浏览记录，不发送模型请求。进入预览时自动收起上方设置区，右上「展开设置」可恢复；切回日志/原始响应也会恢复设置。列表包含不同供应商的历史作品；记录上的 × 将其从列表移除，保留本地原始文件，不取消已发出的请求。`pelican/examples/pelican.html` 是已有手工作品，测试不会读取或上传它。
@@ -172,6 +174,8 @@ python api_tester.py --base-url http://127.0.0.1:18080/v1 --api-key sk-test --pr
 mock 同时实现 `/chat/completions`、`/messages`（校验 `anthropic-version`）、`/responses`、`/images/generations`，`Bearer` 与 `x-api-key` 均可鉴权。带了视觉入参时回复里会多出「看到图片」。鹈鹕题目会返回标明 MOCK 的测试动画，`mock-small` 和 `mock-large` 的车架颜色不同，用于验证记录与预览对应。
 
 `python -m unittest test_api_tester -v` 检查三种协议、请求隔离、流式中断/输出上限、拒绝空 SVG 草稿、旧白屏记录重新判定、主界面提交生成、记录移除，以及供应商/命名 Key 保存切换和重启恢复。`python verify_native_preview.py` 使用真正的主界面验证内嵌 WebView2 子控件、多份作品可显示且不会创建额外顶层窗口。两项验证只使用本机 mock 或临时文件，不读取真实 `settings.json`，不调用真实供应商。
+
+`python verify_preview_performance.py` 是可选的 Windows 实机性能检查，测试 Python 需安装 `psutil` 与 `websocket-client`。它用 40 条临时 MOCK 作品对比 Git `4a10502` 的旧预览页面/渲染器与当前版本，滚动历史并检查缩略图上限、布局稳定、隐藏卸载、切页/最小化后恢复。CPU 按整机比例采样，内存同时列出进程树的工作集总和与私有工作集；共享页可能重复计入前者，数值依机器和作品复杂度而变，不测 GPU。CDP 仅在此检查中临时启用，结果写入 Git 忽略的 `pelican/diagnostics/performance-check.json`；整个过程不读取真实配置，不调用供应商。
 
 ## 判定逻辑
 

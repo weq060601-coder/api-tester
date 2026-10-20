@@ -11,8 +11,11 @@ import argparse
 import ctypes
 from ctypes import wintypes
 import json
+import logging
+import os
 from pathlib import Path
 import sys
+import time
 import webview
 
 
@@ -50,6 +53,11 @@ def main() -> None:
     if not args.parent:
         raise SystemExit("缺少 Tk 预览宿主句柄")
 
+    # Opt-in local diagnostic endpoint; never enabled by normal app launches.
+    debug_port = os.environ.get("API_TESTER_PREVIEW_DEBUG_PORT")
+    if debug_port:
+        webview.settings["REMOTE_DEBUGGING_PORT"] = int(debug_port)
+
     window = webview.create_window(
         "鹈鹕测试",
         args.url,
@@ -68,6 +76,10 @@ def main() -> None:
     user32.GetParent.argtypes = [wintypes.HWND]
     user32.GetParent.restype = wintypes.HWND
     user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
     user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                     ctypes.c_int, ctypes.c_int, wintypes.UINT]
@@ -117,13 +129,49 @@ def main() -> None:
         timer = Timer()
         timer.Interval = 80
         last = [0, 0]
+        browser = form.browser.webview
+        hidden_at = None
+        suspend_task = None
+        suspend_attempted = False
 
         def maintain(_sender, _event) -> None:
+            nonlocal hidden_at, suspend_task, suspend_attempted
             if not user32.IsWindow(args.parent):
                 timer.Stop()
                 user32.ShowWindow(handle, SW_HIDE)
                 form.Close()
                 return
+            visible = (user32.IsWindowVisible(args.parent)
+                       and not user32.IsIconic(user32.GetAncestor(args.parent, 2)))
+            if not visible:
+                if suspend_task is not None and suspend_task.IsCompleted:
+                    try:
+                        if not suspend_task.Result:
+                            logging.warning("WebView2 declined suspension; artwork remains unloaded")
+                    except Exception:
+                        logging.exception("WebView2 suspension failed; artwork remains unloaded")
+                    suspend_task = None
+                if hidden_at is None:
+                    hidden_at = time.monotonic()
+                    # Let visibilitychange unload artwork before suspending JS.
+                    browser.Visible = False
+                if not suspend_attempted and time.monotonic() - hidden_at >= 0.5:
+                    suspend_attempted = True
+                    try:
+                        suspend_task = browser.CoreWebView2.TrySuspendAsync()
+                    except Exception:
+                        logging.exception("WebView2 suspend unavailable; artwork remains unloaded")
+                return
+            if hidden_at is not None:
+                try:
+                    # Resume also cancels a pending TrySuspendAsync operation.
+                    browser.CoreWebView2.Resume()
+                except Exception:
+                    logging.exception("WebView2 resume failed")
+                browser.Visible = True
+                hidden_at = None
+                suspend_task = None
+                suspend_attempted = False
             width, height = client_size()
             if last != [width, height]:
                 last[:] = [width, height]

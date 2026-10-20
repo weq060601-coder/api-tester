@@ -30,6 +30,22 @@ ARTWORK_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
                "font-src data:; base-uri 'none'; form-action 'none'; sandbox")
 
 
+def still_artwork(content: bytes) -> bytes:
+    """A derived thumbnail document; original artwork/response stay untouched."""
+    document = content.decode("utf-8")
+    # SMIL does not obey animation-play-state. Remove animation elements only
+    # in this derived preview. Disable keyframes too, including animations
+    # declared with a more specific or inline !important rule.
+    document = re.sub(r"<(?:animate|animateMotion|animateTransform|set|discard)\b[^>]*(?:/>|>[\s\S]*?</(?:animate|animateMotion|animateTransform|set|discard)\s*>)",
+                      "", document, flags=re.I)
+    document = re.sub(r"@(?:-webkit-)?keyframes\b", "@-api-tester-static-keyframes",
+                      document, flags=re.I)
+    style = ('<style>*,*::before,*::after{animation-play-state:paused!important;animation-delay:-1s!important;'
+             'transition:none!important;caret-color:transparent!important}</style>')
+    return re.sub(r"</head\s*>", lambda m: style + m.group(), document, count=1,
+                  flags=re.I).encode("utf-8") if re.search(r"</head\s*>", document, re.I) else (document + style).encode("utf-8")
+
+
 class _SvgContent(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -225,13 +241,14 @@ def run_pelican_test(client, store: PelicanStore, record: dict, on_delta=None) -
 
 
 PREVIEW_PATH = Path(__file__).with_name("preview.html")
+RENDERER_PATH = Path(__file__).with_name("preview.py")
 
 
 def launch_embedded_preview(url: str, parent_handle: int):
     """Launch one renderer embedded in the supplied Tk tab host."""
     from .runtime import ensure_runtime
     python = ensure_runtime()
-    helper = Path(__file__).with_name("preview.py")
+    helper = RENDERER_PATH
     DIAGNOSTICS_PATH.mkdir(parents=True, exist_ok=True)
     log_path = DIAGNOSTICS_PATH / "preview-errors.log"
     ready_path = Path(tempfile.gettempdir()) / ("api-tester-preview-" + uuid.uuid4().hex + ".json")
@@ -255,6 +272,7 @@ class PelicanPreview:
         self.context = {"providers": [], "selected_provider": "", "selected_models": [],
                         "pelican_reasoning": "默认", "pelican_tokens": str(PELICAN_DEFAULT_MAX_TOKENS),
                         "pelican_timeout": "180"}
+        self.active = True
         self.on_generate = on_generate
         self.on_settings = on_settings
         owner = self
@@ -290,22 +308,24 @@ class PelicanPreview:
                     return
                 if route == "api/context":
                     with owner.context_lock:
-                        content = json.dumps(owner.context, ensure_ascii=False).encode("utf-8")
+                        content = json.dumps({**owner.context, "active": owner.active}, ensure_ascii=False).encode("utf-8")
                     self.send(200, content, "application/json; charset=utf-8")
                     return
                 if route == "api/runs":
                     self.send(200, json.dumps(store.list_runs(), ensure_ascii=False).encode("utf-8"),
                               "application/json; charset=utf-8")
                     return
-                match = re.fullmatch(r"(artwork|raw)/([0-9a-f]{32})", route)
+                match = re.fullmatch(r"(artwork|thumbnail|raw)/([0-9a-f]{32})", route)
                 if match:
                     kind, run_id = match.groups()
                     try:
-                        content = store.read(run_id, "artwork.html" if kind == "artwork" else "response.txt")
+                        content = store.read(run_id, "response.txt" if kind == "raw" else "artwork.html")
+                        if kind == "thumbnail":
+                            content = still_artwork(content)
                     except OSError:
                         self.send(404, b"Not found", "text/plain")
                         return
-                    self.send(200, content, ("text/html" if kind == "artwork" else "text/plain")
+                    self.send(200, content, ("text/plain" if kind == "raw" else "text/html")
                               + "; charset=utf-8", ARTWORK_CSP)
                     return
                 self.send(404, b"Not found", "text/plain")
@@ -414,6 +434,10 @@ class PelicanPreview:
             if source_id not in self.sources:
                 raise ValueError("供应商不存在，请重新选择")
             return dict(self.sources[source_id])
+
+    def set_active(self, active: bool):
+        with self.context_lock:
+            self.active = bool(active)
 
     def embed(self, parent_handle: int):
         with self.window_lock:

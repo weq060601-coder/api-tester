@@ -38,6 +38,7 @@ main{flex:1;min-height:0;min-width:0;display:grid;grid-template-columns:minmax(0
 .time{color:#6e7681;font-size:10px;margin-top:3px}.thumb{position:relative;width:112px;height:70px;overflow:hidden;border-radius:4px;background:white;flex-shrink:0;border:1px solid #3b4656}
 .thumb iframe{width:640px;height:400px;transform:scale(.175);transform-origin:0 0;position:absolute;left:0;top:0;border:0;pointer-events:none}
 .delete{border:0;padding:1px 4px;background:transparent;color:#6e7681;font-size:17px;line-height:1}
+.record.complete .preview{width:112px;height:70px;flex-shrink:0}
 .detail{display:flex;flex-direction:column;min-height:0;min-width:0;background:#0d1117}
 .detail-head{display:flex;align-items:center;gap:5px;padding:8px 10px;border-bottom:1px solid #2a3341;min-height:39px}
 #title{flex:1;min-width:0;color:#8b949e;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
@@ -54,7 +55,7 @@ footer{flex-shrink:0;border-top:1px solid #2a3341;color:#6e7681;font-size:10px;p
 .context-menu button:disabled{color:#6e7681;background:transparent}
 .context-menu .danger{color:#f85149}.context-menu hr{border:0;border-top:1px solid #2a3341;margin:5px}
 [hidden]{display:none!important}
-@media(max-width:420px){main{display:flex;flex-direction:column;overflow:auto}.history{flex:0 0 180px;border-right:0;border-bottom:1px solid #2a3341}.detail{flex:1 0 360px;min-height:360px}.thumb{width:88px;height:55px}.thumb iframe{transform:scale(.1375)}.toolbar{padding:8px;flex-wrap:wrap}.selection{flex:1 0 100%}.pelican-controls{flex:1 0 100%;flex-wrap:wrap}.primary{padding:6px;margin-left:auto}.preview-row{flex-wrap:wrap}}
+@media(max-width:420px){main{display:flex;flex-direction:column;overflow:auto}.history{flex:0 0 180px;border-right:0;border-bottom:1px solid #2a3341}.detail{flex:1 0 360px;min-height:360px}.thumb,.record.complete .preview{width:88px;height:55px}.thumb iframe{transform:scale(.1375)}.toolbar{padding:8px;flex-wrap:wrap}.selection{flex:1 0 100%}.pelican-controls{flex:1 0 100%;flex-wrap:wrap}.primary{padding:6px;margin-left:auto}.preview-row{flex-wrap:wrap}}
 </style></head><body>
 <div class="toolbar"><div class="selection"><div class="caption">鹈鹕 · SVG 动画测试</div>
 <div id="selection" class="muted">使用主界面的供应商和所选模型</div></div>
@@ -80,6 +81,35 @@ footer{flex-shrink:0;border-top:1px solid #2a3341;color:#6e7681;font-size:10px;p
 const $=id=>document.getElementById(id), cards=new Map();
 let context={providers:[],selected_models:[],pelican_reasoning:'默认',pelican_tokens:'32768',pelican_timeout:'180'},records=[],selected='',detailVersion='',rawId='',rawMode=false,submitting=false,controlsSettings='';
 let editVersion=0,savedVersion=0,saveTimer=0,savePromise=null;
+let pageActive=true,pollTimer=0,pollPromise=null,recordsVersion='',detailState='',thumbTick=0;
+const THUMB_LIMIT=4;
+function releaseArtwork(){const art=$('art');if(art.getAttribute('src')&&art.getAttribute('src')!=='about:blank')art.src='about:blank';detailVersion=''}
+function releaseThumbnails(){for(const card of cards.values())card.querySelector('.preview').replaceChildren()}
+function setPageActive(active){
+ active=Boolean(active)&&!document.hidden;
+ if(pageActive===active)return;
+ pageActive=active;detailState='';
+ if(!active){releaseArtwork();releaseThumbnails();$('raw').textContent='';rawId='';closeRecordMenu()}
+}
+function syncThumbnails(){
+ thumbTick=0;if(!pageActive)return;
+ const viewport=$('records').getBoundingClientRect();let loaded=0;
+ for(const record of records){
+  const card=cards.get(record.id);if(!card)continue;
+  const area=card.querySelector('.preview'),box=card.getBoundingClientRect();
+  const visible=record.status==='complete'&&box.bottom>viewport.top&&box.top<viewport.bottom&&loaded<THUMB_LIMIT;
+  if(!visible){if(area.firstChild)area.replaceChildren();continue}
+  loaded++;
+  if(area.firstChild)continue;
+  const thumb=document.createElement('div');thumb.className='thumb';
+  const frame=document.createElement('iframe');frame.setAttribute('sandbox','');frame.setAttribute('draggable','false');frame.title=record.model+' 静止缩略图';frame.referrerPolicy='no-referrer';
+  frame.src='thumbnail/'+record.id;thumb.append(frame);area.append(thumb);
+ }
+}
+function queueThumbnails(){if(!thumbTick)thumbTick=requestAnimationFrame(syncThumbnails)}
+$('records').addEventListener('scroll',queueThumbnails,{passive:true});
+window.addEventListener('resize',queueThumbnails);
+document.addEventListener('visibilitychange',()=>{setPageActive(context.active!==false);clearTimeout(pollTimer);pollTimer=setTimeout(poll,0)});
 const reasoningLevels=['默认','低','中','高'];
 let menuRun='',menuAnchor=null;
 function closeRecordMenu(restoreFocus=false){$('record-menu').hidden=true;menuRun='';if(restoreFocus)menuAnchor?.focus()}
@@ -168,7 +198,11 @@ async function selectRecord(id){selected=id;rawMode=false;renderRecords();await 
 $('animation').onclick=()=>{rawMode=false;renderDetail()};
 $('source').onclick=()=>{rawMode=true;renderDetail()};
 async function renderDetail(){
+ if(!pageActive){releaseArtwork();return}
  const record=records.find(r=>r.id===selected);
+ const nextState=JSON.stringify([selected,rawMode,record?.status,record?.characters,record?.error]);
+ if(detailState===nextState)return;detailState=nextState;
+ if(rawMode||!record||record.status!=='complete')releaseArtwork();
  $('animation').classList.toggle('active',!rawMode);$('source').classList.toggle('active',rawMode);
  $('art').hidden=true;$('raw').hidden=true;$('message').hidden=true;
  if(!record){$('message').hidden=false;$('message').className='';$('message').textContent='在左侧选择模型并生成，或选择已有测试记录。';return}
@@ -194,6 +228,8 @@ async function removeRecord(record){
  }catch(e){$('notice').textContent='移除失败，请重试。'}
 }
 function renderRecords(){
+ const version=JSON.stringify(records.map(r=>[r.id,r.status,r.characters,r.error]))+selected;
+ if(recordsVersion===version){queueThumbnails();return}recordsVersion=version;
  const root=$('records'),ids=new Set(records.map(r=>r.id));
  for(const [id,card]of cards){if(!ids.has(id)){card.remove();cards.delete(id)}}
  root.querySelector('.empty')?.remove();
@@ -204,7 +240,7 @@ function renderRecords(){
  if(!card){card=document.createElement('article');card.className='record';card.dataset.run=record.id;card.tabIndex=0;
  card.innerHTML='<div class="row-head"><div class="identity"><div class="model"></div><div class="provider"></div></div><button class="delete" aria-label="移除记录" title="移除记录">×</button></div><div class="preview-row"><div><div class="status"></div><div class="time"></div></div><div class="preview"></div></div>';
  cards.set(record.id,card)}
- card.classList.toggle('active',record.id===selected);card.onclick=()=>selectRecord(record.id);
+ card.classList.toggle('active',record.id===selected);card.classList.toggle('complete',record.status==='complete');card.onclick=()=>selectRecord(record.id);
  card.oncontextmenu=event=>showRecordMenu(event,record,card);
  card.onkeydown=event=>{if(event.target!==card)return;if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){const rect=card.getBoundingClientRect();showRecordMenu({preventDefault:()=>event.preventDefault(),stopPropagation:()=>event.stopPropagation(),clientX:rect.left+12,clientY:rect.top+12},record,card)}};
  card.querySelector('.delete').onclick=e=>{e.stopPropagation();removeRecord(record)};
@@ -214,25 +250,29 @@ function renderRecords(){
  const status=card.querySelector('.status');status.className='status'+(record.status==='failed'?' failed':'');
  status.textContent=record.status==='complete'?'已生成':record.status==='running'?'生成中 · '+(record.characters||0)+' 字符':'未生成作品';
  status.title=record.error||'';
- const area=card.querySelector('.preview');
- if(area.dataset.status!==record.status){area.dataset.status=record.status;area.replaceChildren();
- if(record.status==='complete'){const thumb=document.createElement('div');thumb.className='thumb';
- const frame=document.createElement('iframe');frame.setAttribute('sandbox','');frame.setAttribute('draggable','false');frame.title=record.model+' 缩略预览';frame.referrerPolicy='no-referrer';
- frame.loading='lazy';frame.src='artwork/'+record.id;thumb.append(frame);area.append(thumb)}}
  if(card!==cursor)root.insertBefore(card,cursor);cursor=card.nextSibling;
  }
  const active=records.filter(r=>r.status==='running').length;$('count').textContent=records.length+' 条'+(active?' · '+active+' 生成中':'');
+ queueThumbnails();
 }
-async function poll(schedule=true){
+async function pollOnce(){
  const requestedVersion=editVersion;
- try{const [runsResponse,contextResponse]=await Promise.all([fetch('api/runs',{cache:'no-store'}),fetch('api/context',{cache:'no-store'})]);
- if(!runsResponse.ok||!contextResponse.ok)throw Error();records=await runsResponse.json();const incoming=await contextResponse.json();
+ try{const contextResponse=await fetch('api/context',{cache:'no-store'});
+ if(!contextResponse.ok)throw Error();const incoming=await contextResponse.json();
+ setPageActive(incoming.active!==false);
  if(requestedVersion!==editVersion||editVersion!==savedVersion||savePromise){incoming.pelican_tokens=context.pelican_tokens;incoming.pelican_reasoning=context.pelican_reasoning;incoming.pelican_timeout=context.pelican_timeout;incoming.prompt_mode=context.prompt_mode;incoming.custom_prompt=context.custom_prompt}context=incoming;
+ if(!pageActive)return;
+ const runsResponse=await fetch('api/runs',{cache:'no-store'});if(!runsResponse.ok)throw Error();records=await runsResponse.json();
  if(!records.some(r=>r.id===selected)){selected=records[0]?.id||'';rawMode=false;rawId=''}
  if(menuRun&&!records.some(r=>r.id===menuRun))closeRecordMenu();
  updateSelection();renderRecords();await renderDetail();
  }catch(error){$('notice').textContent='预览连接已断开。请点击主界面的「查看作品」重新加载。'}
- if(schedule)setTimeout(poll,800);
+}
+async function poll(schedule=true){
+ while(pollPromise){await pollPromise;if(schedule)return}
+ clearTimeout(pollTimer);
+ pollPromise=pollOnce();
+ try{await pollPromise}finally{pollPromise=null;pollTimer=setTimeout(poll,!pageActive?1000:records.some(r=>r.status==='running')?800:2500)}
 }
 for(const eventName of ['dragstart','dragover','drop']){
  document.addEventListener(eventName,event=>event.preventDefault(),true);

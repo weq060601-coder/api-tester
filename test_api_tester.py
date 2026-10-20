@@ -149,6 +149,29 @@ class PelicanTests(unittest.TestCase):
             finally:
                 preview.close()
 
+    def test_static_thumbnails_and_preview_visibility(self):
+        raw = '<html><head><style>circle{animation:spin 1s infinite!important}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><svg><circle r="20"><animate attributeName="r" values="10;20" dur="1s" repeatCount="indefinite"/></circle><animateTransform attributeName="transform" dur="1s"> </animateTransform></svg></body></html>'
+        with tempfile.TemporaryDirectory() as directory:
+            store = PelicanStore(Path(directory))
+            record = store.begin("mock", "MOCK", "openai", 32768)
+            store.finish(record["id"], raw, 1)
+            preview = PelicanPreview(store)
+            try:
+                with urllib.request.urlopen(preview.url + "thumbnail/" + record["id"]) as response:
+                    thumbnail = response.read().decode()
+                    self.assertEqual(response.headers["Content-Security-Policy"], ARTWORK_CSP)
+                    self.assertIn("animation-play-state:paused!important", thumbnail)
+                    self.assertNotIn("<animate", thumbnail)
+                    self.assertNotIn("@keyframes", thumbnail)
+                    self.assertIn('<circle r="20">', thumbnail)
+                self.assertEqual(store.read(record["id"], "artwork.html").decode(), raw)
+                for active in (False, True):
+                    preview.set_active(active)
+                    with urllib.request.urlopen(preview.url + "api/context") as response:
+                        self.assertEqual(json.load(response)["active"], active)
+            finally:
+                preview.close()
+
     def test_embedded_renderer_reuse_and_record_removal(self):
         with tempfile.TemporaryDirectory() as directory:
             store = PelicanStore(Path(directory))

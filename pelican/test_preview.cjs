@@ -8,6 +8,7 @@ const elements = new Map();
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     value: '', dataset: {}, textContent: '', addEventListener() {},
+    getAttribute(name) {return this[name];},
     classList: {toggle() {}},
     checkValidity() { return Number.isInteger(Number(this.value)) && Number(this.value) >= (id === 'limit' ? 256 : 1); },
   });
@@ -28,7 +29,7 @@ let release;
 const context = vm.createContext({
   document: {getElementById: element, addEventListener() {}},
   window: {innerWidth: 800, innerHeight: 600, addEventListener() {}},
-  setTimeout, clearTimeout,
+  setTimeout, clearTimeout,requestAnimationFrame: () => 1,
   fetch: async (url, request) => {
     if (url.endsWith('/open')) {
       opened.push({url, ...JSON.parse(request.body)});
@@ -100,6 +101,62 @@ async function main() {
   assert.equal(menuButtons[1].disabled, true);
   assert.equal(menuButtons[2].disabled, true);
   assert.equal(menuButtons[0].disabled, false);
-  console.log('PASS: autosave, settings sync, context menu targeting, placement and running state');
+  // Browsing a long history must release old frames, cap visible thumbnails,
+  // and reuse existing frames when nothing changes.
+  let scroll = 0;
+  const areas = Array.from({length: 40}, () => ({
+    children: [], get firstChild() {return this.children[0];},
+    append(child) {this.children.push(child);},
+    replaceChildren() {this.children = [];},
+  }));
+  context.document.createElement = tag => ({
+    tag, children: [], setAttribute() {}, append(child) {this.children.push(child);},
+  });
+  element('records').getBoundingClientRect = () => ({top: 0, bottom: 1000});
+  context.performanceCards = areas.map((area, i) => ({
+    querySelector: () => area,
+    getBoundingClientRect: () => ({top: i * 100 - scroll, bottom: (i + 1) * 100 - scroll}),
+  }));
+  vm.runInContext(`cards.clear();records=performanceCards.map((card,i)=>{
+    cards.set(String(i),card);return {id:String(i),model:'mock',status:'complete'};
+  });syncThumbnails()`, context);
+  assert.equal(areas.filter(area => area.firstChild).length, 4);
+  const firstThumb = areas[0].firstChild;
+  vm.runInContext('syncThumbnails()', context);
+  assert.equal(areas[0].firstChild, firstThumb);
+  scroll = 3200;
+  vm.runInContext('syncThumbnails()', context);
+  assert.equal(areas[0].firstChild, undefined);
+  assert.equal(areas.filter(area => area.firstChild).length, 4);
+  assert.equal(areas[32].firstChild.children[0].src, 'thumbnail/32');
+  element('art').src = 'artwork/0';
+  vm.runInContext('setPageActive(false);syncThumbnails()', context);
+  assert.equal(element('art').src, 'about:blank');
+  assert.equal(areas.filter(area => area.firstChild).length, 0);
+  vm.runInContext('setPageActive(true);syncThumbnails()', context);
+  assert.equal(areas.filter(area => area.firstChild).length, 4);
+  vm.runInContext("selected='0';rawMode=false;renderDetail()", context);
+  assert.equal(element('art').src, 'artwork/0');
+  // A running record's raw view needs no fetch and must unload the old artwork.
+  vm.runInContext("records[0].status='running';rawMode=true;renderDetail()", context);
+  assert.equal(element('art').src, 'about:blank');
+  let contextReads = 0, runsReads = 0;
+  context.fetch = async url => {
+    if (url === 'api/context') {
+      contextReads++;
+      return {ok: true, json: async () => ({active: false})};
+    }
+    runsReads++;
+    throw Error('Hidden page must not fetch runs');
+  };
+  await vm.runInContext('poll(false)', context);
+  assert.equal(contextReads, 1);
+  assert.equal(runsReads, 0);
+  // Manual refreshes during another poll are serialized and stay scheduled.
+  await vm.runInContext('Promise.all([poll(false),poll(false)])', context);
+  assert.equal(contextReads, 3);
+  assert.equal(vm.runInContext('Boolean(pollTimer)', context), true);
+  vm.runInContext('clearTimeout(pollTimer)', context);
+  console.log('PASS: autosave, context menus, bounded thumbnails, hidden/raw unloading and serial polling');
 }
 main().catch(error => {console.error(error); process.exitCode = 1;});

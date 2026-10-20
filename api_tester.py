@@ -1284,7 +1284,7 @@ def build_gui():  # noqa: C901
                     schedule_save()
         except queue.Empty:
             pass
-        sync_pelican_sources()
+        sync_pelican_sources(force=False)
         state["drain_id"] = root.after(60, drain_log)
 
     def row_tags(i: int, st: str) -> tuple:
@@ -2112,10 +2112,16 @@ def build_gui():  # noqa: C901
         sync_pelican_sources()
         return state["pelican_preview"]
 
-    def sync_pelican_sources():
+    def sync_pelican_sources(force=True):
         preview = state.get("pelican_preview")
         if not preview:
             return
+        preview.set_active(nb.select() == str(pelican_tab) and root.state() != "iconic"
+                           and bool(preview_host.winfo_ismapped()))
+        now = time.monotonic()
+        if not force and now - state.get("pelican_sources_at", 0) < 0.3:
+            return
+        state["pelican_sources_at"] = now
         sources = {}
         active = state.get("active_provider", "")
         for name, saved in state.get("providers", {}).items():
