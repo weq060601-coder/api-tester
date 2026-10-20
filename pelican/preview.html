@@ -14,6 +14,11 @@ button:hover{background:#2a3441}button:disabled{color:#6e7681;cursor:default}but
 .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #2a3341;flex-shrink:0;min-width:0}
 .selection{min-width:160px;flex:1}.caption{font-size:12px;color:#2dd4bf;margin-bottom:4px}.muted{color:#8b949e;font-size:11px}
 #selection{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.prompt-panel{padding:8px 12px;border-bottom:1px solid #2a3341;flex-shrink:0}
+.prompt-panel summary{cursor:pointer;color:#8b949e;font-size:12px}
+.prompt-mode{display:flex;gap:6px;margin:8px 0;align-items:center;flex-wrap:wrap}
+.prompt-mode button.active{border-color:#2dd4bf;color:#2dd4bf}
+#custom-prompt{width:100%;height:82px;resize:vertical;max-height:180px;min-height:50px;padding:8px;border:1px solid #3b4656;border-radius:4px;background:#0d1117;color:#e6edf3;font:12px "Microsoft YaHei UI",sans-serif}
 .pelican-controls{display:flex;align-items:center;gap:6px;flex-shrink:0;min-width:0;color:#8b949e;font-size:11px;white-space:nowrap}
 .pelican-controls label{display:flex;align-items:center;gap:4px}.pelican-controls select,.pelican-controls input{height:28px;padding:3px 6px;border:1px solid #3b4656;border-radius:4px;background:#0d1117;color:#e6edf3}
 .pelican-controls .control-button{width:58px;height:28px;padding:3px 5px;color:#e6edf3;background:#0d1117;border-color:#3b4656;font-size:11px}
@@ -55,13 +60,16 @@ footer{flex-shrink:0;border-top:1px solid #2a3341;color:#6e7681;font-size:10px;p
 <div id="selection" class="muted">使用主界面的供应商和所选模型</div></div>
 <div class="pelican-controls"><label>推理<button id="reasoning" class="control-button" type="button" title="点击切换推理强度">默认</button></label><label>上限<input id="limit" type="number" min="256" step="1" value="32768" inputmode="numeric"></label><label>超时(秒)<input id="timeout" type="number" min="1" step="1" value="180" inputmode="numeric"></label><span id="save-status" class="muted" role="status"></span></div>
 <button id="generate" class="primary" disabled>生成选中模型</button></div>
+<details class="prompt-panel" id="prompt-panel"><summary id="prompt-summary">提示词 · 固定鹈鹕题目</summary>
+<div class="prompt-mode"><button id="fixed-prompt" type="button" class="active">固定鹈鹕题目</button><button id="custom-mode" type="button">自定义 SVG</button><span class="muted">切换和编辑自动保存，点击开始生成才发送请求</span></div>
+<div id="custom-editor" hidden><textarea id="custom-prompt" maxlength="12000" placeholder="输入完整的 SVG 绘图提示词；内容会原样发送。预览支持 SVG/HTML 与 CSS 动画。" spellcheck="false"></textarea><div class="muted">请要求输出完整 SVG 或含 SVG 的 HTML；预览允许 CSS/SVG 动画，禁用脚本和外部资源。</div></div></details>
 <div id="notice" role="status"></div>
 <main><section class="history"><div class="list-head"><span>测试记录</span><span id="count"></span></div><div id="records"></div></section>
 <section class="detail"><div class="detail-head"><span id="title">作品预览</span><button id="animation" class="active">动画</button><button id="source">原始回复</button></div>
 <iframe id="art" sandbox title="模型作品预览" referrerpolicy="no-referrer" draggable="false" hidden></iframe>
 <pre id="raw" hidden></pre><div id="message">在左侧模型列表手动添加或获取模型，并选中要测试的模型。&#10;确认本页参数后点击「开始生成」。</div>
 </section></main>
-<footer>每次只发送统一题目 · 不发送本地文件或其他模型作品</footer>
+<footer>每次只发送所选提示词 · 不发送本地文件或其他模型作品</footer>
 <div id="record-menu" class="context-menu" role="menu" aria-label="测试记录操作" hidden>
 <button type="button" role="menuitem" data-action="explorer">在文件资源管理器中显示</button>
 <button type="button" role="menuitem" data-action="browser">在浏览器中打开作品</button>
@@ -109,15 +117,21 @@ window.addEventListener('resize',()=>closeRecordMenu());
 window.addEventListener('blur',()=>closeRecordMenu());
 function provider(){return context.providers.find(p=>p.id===context.selected_provider)}
 function models(){return context.selected_models}
+function settingsKey(c){return JSON.stringify([c.selected_provider,c.pelican_reasoning,c.pelican_tokens,c.pelican_timeout,c.prompt_mode||'fixed',c.custom_prompt||''])}
+function renderPromptMode(){const custom=$('custom-mode').dataset.selected==='true';$('custom-editor').hidden=!custom;$('fixed-prompt').classList.toggle('active',!custom);$('custom-mode').classList.toggle('active',custom);$('prompt-summary').textContent=custom?'提示词 · 自定义 SVG':'提示词 · 固定鹈鹕题目'}
+function choosePromptMode(custom){$('custom-mode').dataset.selected=String(custom);renderPromptMode();changed()}
+$('fixed-prompt').onclick=()=>choosePromptMode(false);
+$('custom-mode').onclick=()=>choosePromptMode(true);
+$('custom-prompt').addEventListener('input',changed);
 function updateSelection(){
  const p=provider(),chosen=models();$('selection').textContent=(p?.name||'先在主界面填写连接')+' · '+(chosen.length?'左侧所选 '+chosen.length+' 个：'+chosen.join('、'):'请在左侧模型列表添加并选择模型');
  $('selection').title=$('selection').textContent;
- const settings=JSON.stringify([context.selected_provider,context.pelican_reasoning,context.pelican_tokens,context.pelican_timeout]);
- if(controlsSettings!==settings&&editVersion===savedVersion&&!savePromise){const level=context.pelican_reasoning||'默认';$('reasoning').dataset.value=reasoningLevels.includes(level)?level:'默认';$('reasoning').textContent=$('reasoning').dataset.value;$('limit').value=context.pelican_tokens||'32768';$('timeout').value=context.pelican_timeout||'180';controlsSettings=settings}
+ const settings=settingsKey(context);
+ if(controlsSettings!==settings&&editVersion===savedVersion&&!savePromise){const level=context.pelican_reasoning||'默认';$('reasoning').dataset.value=reasoningLevels.includes(level)?level:'默认';$('reasoning').textContent=$('reasoning').dataset.value;$('limit').value=context.pelican_tokens||'32768';$('timeout').value=context.pelican_timeout||'180';$('custom-mode').dataset.selected=String(context.prompt_mode==='custom');$('custom-prompt').value=context.custom_prompt||'';renderPromptMode();controlsSettings=settings}
  $('generate').textContent=chosen.length>1?'生成 '+chosen.length+' 个模型':'开始生成';
  $('generate').disabled=submitting||!p||!chosen.length;
 }
-function options(){return {reasoning:$('reasoning').dataset.value||'默认',max_tokens:$('limit').value,timeout:$('timeout').value}}
+function options(){return {reasoning:$('reasoning').dataset.value||'默认',max_tokens:$('limit').value,timeout:$('timeout').value,prompt_mode:$('custom-mode').dataset.selected==='true'?'custom':'fixed',custom_prompt:$('custom-prompt').value}}
 function changed(){editVersion++;$('save-status').textContent='待保存';clearTimeout(saveTimer);saveTimer=setTimeout(()=>saveOptions().catch(()=>{}),400)}
 async function saveOptions(){
  clearTimeout(saveTimer);
@@ -132,7 +146,8 @@ async function saveOptions(){
    const result=await response.json();if(!response.ok)throw Error(result.error||'参数保存失败');
    savedVersion=version;
    context.pelican_tokens=payload.max_tokens;context.pelican_reasoning=payload.reasoning;context.pelican_timeout=payload.timeout;
-   controlsSettings=JSON.stringify([context.selected_provider,payload.reasoning,payload.max_tokens,payload.timeout]);
+   context.prompt_mode=payload.prompt_mode;context.custom_prompt=payload.custom_prompt;
+   controlsSettings=settingsKey(context);
   }
   $('save-status').textContent='已保存';
  })();
@@ -157,7 +172,7 @@ async function renderDetail(){
  $('animation').classList.toggle('active',!rawMode);$('source').classList.toggle('active',rawMode);
  $('art').hidden=true;$('raw').hidden=true;$('message').hidden=true;
  if(!record){$('message').hidden=false;$('message').className='';$('message').textContent='在左侧选择模型并生成，或选择已有测试记录。';return}
- $('title').textContent=record.model+' · '+record.provider;$('title').title=$('title').textContent;
+ $('title').textContent=record.model+' · '+record.provider+' · '+(record.prompt_mode==='custom'?'自定义 SVG':'固定鹈鹕');$('title').title=record.prompt||$('title').textContent;
  if(rawMode){$('raw').hidden=false;
   if(record.status==='running'){rawId='';$('raw').textContent='正在生成 · 已收到 '+(record.characters||0)+' 字符\n完整原始回复会在本次请求结束后保存。';return}
   if(rawId!==record.id){rawId=record.id;$('raw').textContent='正在读取…';
@@ -194,7 +209,7 @@ function renderRecords(){
  card.onkeydown=event=>{if(event.target!==card)return;if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){const rect=card.getBoundingClientRect();showRecordMenu({preventDefault:()=>event.preventDefault(),stopPropagation:()=>event.stopPropagation(),clientX:rect.left+12,clientY:rect.top+12},record,card)}};
  card.querySelector('.delete').onclick=e=>{e.stopPropagation();removeRecord(record)};
  card.querySelector('.model').textContent=record.model;card.querySelector('.model').title=record.model;
- card.querySelector('.provider').textContent=record.provider;card.querySelector('.provider').title=record.provider;
+ card.querySelector('.provider').textContent=record.provider+' · '+(record.prompt_mode==='custom'?'自定义 SVG':'固定鹈鹕');card.querySelector('.provider').title=record.prompt||record.provider;
  card.querySelector('.time').textContent=record.created.replace('T',' ').slice(5,16);
  const status=card.querySelector('.status');status.className='status'+(record.status==='failed'?' failed':'');
  status.textContent=record.status==='complete'?'已生成':record.status==='running'?'生成中 · '+(record.characters||0)+' 字符':'未生成作品';
@@ -212,7 +227,7 @@ async function poll(schedule=true){
  const requestedVersion=editVersion;
  try{const [runsResponse,contextResponse]=await Promise.all([fetch('api/runs',{cache:'no-store'}),fetch('api/context',{cache:'no-store'})]);
  if(!runsResponse.ok||!contextResponse.ok)throw Error();records=await runsResponse.json();const incoming=await contextResponse.json();
- if(requestedVersion!==editVersion||editVersion!==savedVersion||savePromise){incoming.pelican_tokens=context.pelican_tokens;incoming.pelican_reasoning=context.pelican_reasoning;incoming.pelican_timeout=context.pelican_timeout}context=incoming;
+ if(requestedVersion!==editVersion||editVersion!==savedVersion||savePromise){incoming.pelican_tokens=context.pelican_tokens;incoming.pelican_reasoning=context.pelican_reasoning;incoming.pelican_timeout=context.pelican_timeout;incoming.prompt_mode=context.prompt_mode;incoming.custom_prompt=context.custom_prompt}context=incoming;
  if(!records.some(r=>r.id===selected)){selected=records[0]?.id||'';rawMode=false;rawId=''}
  if(menuRun&&!records.some(r=>r.id===menuRun))closeRecordMenu();
  updateSelection();renderRecords();await renderDetail();

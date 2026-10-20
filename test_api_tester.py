@@ -66,6 +66,27 @@ class PelicanTests(unittest.TestCase):
             self.assertEqual(len(restored.list_runs()), 3)
             self.assertTrue(all(r["status"] == "complete" for r in restored.list_runs()))
 
+    def test_custom_svg_prompt_is_sent_verbatim_and_fixed_prompt_is_unchanged(self):
+        import hashlib
+        self.assertEqual(hashlib.sha256(PELICAN_PROMPT.encode()).hexdigest(),
+                         "d36648f31ef14889c6b41d6bb6530cf9df27881bccb8f9064c94b7451914ce2b")
+        custom = "画一个旋转星球。直接输出完整 SVG。\n  保留这些空格。"
+        with tempfile.TemporaryDirectory() as directory:
+            store = PelicanStore(Path(directory))
+            cli = api_tester.ApiClient(self.base, "sk-test", timeout=10)
+            for mode, prompt in (("custom", custom), ("fixed", PELICAN_PROMPT)):
+                record = store.begin("mock-small", "MOCK", "openai", 32768,
+                                     prompt=prompt, prompt_mode=mode)
+                with patch.object(cli, "test_chat", wraps=cli.test_chat) as chat:
+                    outcome = run_pelican_test(cli, store, record)
+                    self.assertEqual(outcome["status"], "complete", outcome)
+                    self.assertEqual(chat.call_args.args[1], prompt)
+                    self.assertFalse(chat.call_args.kwargs["with_image"])
+                self.assertEqual((Path(directory) / record["id"] / "prompt.txt").read_text(encoding="utf-8"), prompt)
+                restored = next(r for r in PelicanStore(Path(directory)).list_runs() if r["id"] == record["id"])
+                self.assertEqual(restored["prompt_mode"], mode)
+                self.assertEqual(restored["prompt"], prompt)
+
     def test_errors_are_saved_without_fake_artwork(self):
         with tempfile.TemporaryDirectory() as directory:
             store = PelicanStore(Path(directory))
@@ -456,6 +477,24 @@ class GuiPersistenceTests(unittest.TestCase):
                 self.assertTrue(tree.bind("<Control-Insert>"))
                 self.assertFalse(any(isinstance(w, ttk.Button) and w.cget("text") == "复制 ID"
                                       for w in self.widgets(root)))
+                row = tree.get_children()[1]
+                x, y, width, height = tree.bbox(row, "model")
+                tree.event_generate("<Motion>", x=x + 5, y=y + height // 2)
+                root.update_idletasks()
+                entry = tree.nametowidget(str(tree) + ".model_text")
+                self.assertEqual(entry.cget("cursor"), "xterm")
+                self.assertEqual(entry.get(), "copy-two")
+                self.assertTrue(entry.winfo_ismapped())
+                entry.event_generate("<ButtonPress-1>", x=1, y=height // 2)
+                entry.event_generate("<B1-Motion>", x=35, y=height // 2)
+                entry.event_generate("<ButtonRelease-1>", x=35, y=height // 2)
+                self.assertTrue(entry.selection_present(), "拖动必须选中文字")
+                selected = entry.get()[entry.index("sel.first"):entry.index("sel.last")]
+                self.assertTrue(selected and selected in entry.get())
+                entry.event_generate("<<Copy>>")
+                self.assertEqual(root.clipboard_get(), selected)
+                self.assertEqual(entry.cget("state"), "readonly")
+                self.assertEqual(entry.get(), "copy-two", "选字不能修改模型 ID")
             self.run_gui(settings, driver)
 
     def test_opt_out_removes_existing_saved_results_and_delete_persists(self):
@@ -594,9 +633,12 @@ class GuiPersistenceTests(unittest.TestCase):
                     "pelican_max_tokens": "8192"}), encoding="utf-8")
                 opened = []
                 requested_parameters = []
+                requested_prompts = []
+                custom_svg_prompt = "画一只旋转的小猫，输出完整 SVG。"
                 original_chat = api_tester.ApiClient.test_chat
 
                 def capture_chat(client, *args, **kwargs):
+                    requested_prompts.append(args[1])
                     requested_parameters.append((client.timeout, kwargs.get("max_tokens"),
                                                  kwargs.get("reasoning_effort")))
                     return original_chat(client, *args, **kwargs)
@@ -645,7 +687,8 @@ class GuiPersistenceTests(unittest.TestCase):
                         try:
                             request = urllib.request.Request(preview.url + "api/settings",
                                 data=json.dumps({"max_tokens": "49152", "reasoning": "高",
-                                                 "timeout": "420"}).encode(),
+                                                 "timeout": "420", "prompt_mode": "custom",
+                                                 "custom_prompt": custom_svg_prompt}).encode(),
                                 headers={"Content-Type": "application/json"})
                             with urllib.request.urlopen(request, timeout=8) as response:
                                 reply.update(json.load(response))
@@ -666,6 +709,8 @@ class GuiPersistenceTests(unittest.TestCase):
                     self.assertEqual(saved["pelican_max_tokens"], "49152")
                     self.assertEqual(saved["pelican_reasoning"], "高")
                     self.assertEqual(saved["pelican_timeout"], "420")
+                    self.assertEqual(saved["svg_prompt_mode"], "custom")
+                    self.assertEqual(saved["svg_custom_prompt"], custom_svg_prompt)
                     self.press(root, "鹈鹕测试")
                     self.assertEqual(preview.store.list_runs(), [])
                     self.assertEqual(requested_parameters, [])
@@ -678,7 +723,8 @@ class GuiPersistenceTests(unittest.TestCase):
                                 data=json.dumps({"provider": context["selected_provider"],
                                                  "models": context["selected_models"],
                                                  "max_tokens": "49152", "reasoning": "高",
-                                                 "timeout": "420"}).encode(),
+                                                 "timeout": "420", "prompt_mode": "custom",
+                                                 "custom_prompt": custom_svg_prompt}).encode(),
                                 headers={"Content-Type": "application/json"})
                             with urllib.request.urlopen(request, timeout=8) as response:
                                 generated.update(json.load(response))
@@ -703,17 +749,23 @@ class GuiPersistenceTests(unittest.TestCase):
                     self.assertEqual({r["model"] for r in stored}, {"mock-small", "mock-large"})
                     self.assertTrue(all(r["max_tokens"] == 49152 for r in stored))
                     self.assertTrue(all(r["reasoning_effort"] == "high" for r in stored))
+                    self.assertTrue(all(r["prompt_mode"] == "custom" for r in stored))
+                    self.assertTrue(all(r["prompt"] == custom_svg_prompt for r in stored))
 
                 with patch.object(api_tester, "PELICAN_RESULTS_PATH", results), \
                         patch.object(PelicanPreview, "embed", open_window), \
                         patch.object(api_tester.ApiClient, "test_chat", capture_chat):
                     self.run_gui(settings, driver)
                 self.assertEqual(requested_parameters, [(420, 49152, "high")] * 2)
+                self.assertEqual(requested_prompts, [custom_svg_prompt] * 2)
                 def check_page_restart(root):
                     entries = [w for w in self.row_widgets(root, "鹈鹕测试") if type(w) is ttk.Entry]
                     self.assertEqual([w.get() for w in entries], ["49152", "420"])
                     self.assertEqual(self.combo(root, "鹈鹕测试").get(), "高")
                 self.run_gui(settings, check_page_restart)
+                saved = json.loads(settings.read_text(encoding="utf-8"))
+                self.assertEqual(saved["svg_prompt_mode"], "custom")
+                self.assertEqual(saved["svg_custom_prompt"], custom_svg_prompt)
         finally:
             server.shutdown()
             server.server_close()

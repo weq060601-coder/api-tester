@@ -123,15 +123,17 @@ class PelicanStore:
         tmp.replace(folder / "run.json")
 
     def begin(self, model: str, provider: str, protocol: str, max_tokens: int,
-              reasoning_effort: str = "") -> dict:
+              reasoning_effort: str = "", *, prompt: str = PELICAN_PROMPT,
+              prompt_mode: str = "fixed") -> dict:
         record = {"id": uuid.uuid4().hex, "model": model, "provider": provider,
                   "protocol": protocol, "created": datetime.now().astimezone().isoformat(timespec="seconds"),
                   "status": "running", "elapsed": 0, "error": "", "max_tokens": max_tokens,
-                  "reasoning_effort": reasoning_effort, "characters": 0, "validation_version": 2}
+                  "reasoning_effort": reasoning_effort, "characters": 0, "validation_version": 2,
+                  "prompt": prompt, "prompt_mode": prompt_mode}
         with self.lock:
             self._write(record)
             folder = self.directory / record["id"]
-            (folder / "prompt.txt").write_text(PELICAN_PROMPT, encoding="utf-8")
+            (folder / "prompt.txt").write_text(prompt, encoding="utf-8")
             self.records[record["id"]] = record
         return dict(record)
 
@@ -196,7 +198,7 @@ class PelicanStore:
 
 
 def run_pelican_test(client, store: PelicanStore, record: dict, on_delta=None) -> dict:
-    """The only model input is the fixed prompt: no filesystem, history, tools or images."""
+    """Send only the run's prompt, without other artwork, history, tools or images."""
     import time
     start = time.perf_counter()
     chunks = []
@@ -211,7 +213,7 @@ def run_pelican_test(client, store: PelicanStore, record: dict, on_delta=None) -
             on_delta(piece)
 
     try:
-        result = client.test_chat(record["model"], PELICAN_PROMPT, stream=True,
+        result = client.test_chat(record["model"], record.get("prompt", PELICAN_PROMPT), stream=True,
                                   max_tokens=record["max_tokens"], temperature=0.0,
                                   on_delta=receive, with_image=False,
                                   reasoning_effort=record.get("reasoning_effort", ""))
@@ -347,7 +349,7 @@ class PelicanPreview:
                         return
                     if owner.on_generate is None:
                         raise ValueError("请从主界面打开动画测试")
-                    options = {key: payload[key] for key in ("max_tokens", "reasoning", "timeout")
+                    options = {key: payload[key] for key in ("max_tokens", "reasoning", "timeout", "prompt_mode", "custom_prompt")
                                if key in payload}
                     if options and owner.on_settings is not None:
                         owner.on_settings(options)
@@ -395,7 +397,7 @@ class PelicanPreview:
 
     def set_sources(self, sources: dict, selected_provider: str, selected_models: list,
                     reasoning_label: str = "默认", max_tokens: str = str(PELICAN_DEFAULT_MAX_TOKENS),
-                    timeout: str = "180"):
+                    timeout: str = "180", prompt_mode: str = "fixed", custom_prompt: str = ""):
         with self.context_lock:
             self.sources = sources
             self.context = {
@@ -404,6 +406,7 @@ class PelicanPreview:
                 "selected_provider": selected_provider, "selected_models": list(selected_models),
                 "pelican_reasoning": reasoning_label, "pelican_tokens": str(max_tokens),
                 "pelican_timeout": str(timeout),
+                "prompt_mode": prompt_mode, "custom_prompt": custom_prompt,
             }
 
     def get_source(self, source_id: str):

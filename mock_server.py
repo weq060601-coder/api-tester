@@ -41,6 +41,8 @@ def response_text(body):
     if "用 SVG 画一个鹈鹕骑自行车" in json.dumps(body, ensure_ascii=False):
         model = body.get("model", "mock")
         return MOCK_PELICAN.format(model=model, color="#f05252" if model == "mock-small" else "#3b82f6")
+    if "SVG" in json.dumps(body, ensure_ascii=False):
+        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="30" fill="teal"/><text x="25" y="55">MOCK</text></svg>'
     return "在线 看到图片" if saw_image(body) else "在线"
 
 

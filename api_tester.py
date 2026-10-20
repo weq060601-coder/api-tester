@@ -36,7 +36,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from pelican import (PELICAN_DEFAULT_MAX_TOKENS, PELICAN_SETTINGS_VERSION, RESULTS_PATH,
+from pelican import (PELICAN_DEFAULT_MAX_TOKENS, PELICAN_SETTINGS_VERSION, PELICAN_PROMPT, RESULTS_PATH,
                      PelicanPreview, PelicanStore, migrate_legacy_files,
                      run_pelican_test, saved_output_limit)
 
@@ -1096,6 +1096,68 @@ def build_gui():  # noqa: C901
     tree.configure(yscrollcommand=vsb.set)
     vsb.pack(side="right", fill="y")
     tree.pack(side="left", fill="both", expand=True)
+    # A native read-only Entry over the hovered ID cell supplies real text
+    # selection (I-beam, drag, Ctrl+C), while the Treeview keeps batch selection.
+    model_text = tk.Entry(tree, name="model_text", readonlybackground=C["card"],
+                          fg=C["fg"], relief="flat", bd=0, font=F["ui"],
+                          cursor="xterm", exportselection=False,
+                          selectbackground=C["sel"], selectforeground=C["acc_hi"])
+    text_cell = {"iid": ""}
+
+    def hide_model_text(_event=None):
+        model_text.place_forget()
+        text_cell["iid"] = ""
+
+    def show_model_text(event):
+        iid = tree.identify_row(event.y)
+        if not iid or tree.identify_column(event.x) != "#1":
+            hide_model_text()
+            return
+        box = tree.bbox(iid, "model")
+        if not box:
+            return
+        if text_cell["iid"] != iid:
+            model_text.configure(state="normal")
+            model_text.delete(0, "end")
+            model_text.insert(0, tree.set(iid, "model"))
+            model_text.configure(state="readonly")
+            text_cell["iid"] = iid
+        x, y, width, height = box
+        color = C["sel"] if iid in tree.selection() else (
+            C["stripe"] if tree.index(iid) % 2 else C["card"])
+        model_text.configure(readonlybackground=color)
+        model_text.place(x=x + px(3), y=y, width=max(1, width - px(3)), height=height)
+
+    def select_text_row(event):
+        iid = text_cell["iid"]
+        if not iid:
+            return
+        tree.focus(iid)
+        if event.state & 0x0004:
+            tree.selection_toggle(iid)
+        elif event.state & 0x0001:
+            rows = list(tree.get_children())
+            anchor = tree.selection()[0] if tree.selection() else iid
+            lo, hi = sorted((rows.index(anchor), rows.index(iid)))
+            tree.selection_set(rows[lo:hi + 1])
+        else:
+            tree.selection_set(iid)
+        model_text.configure(readonlybackground=C["sel"])
+        # Leave Entry's native press/drag/release bindings in control of text.
+
+    tree.bind("<Motion>", show_model_text)
+    model_text.bind("<Button-1>", select_text_row)
+    model_text.bind("<Leave>", lambda e: hide_model_text() if not e.state & 0x0100 else None)
+    model_text.bind("<Escape>", lambda e: (hide_model_text(), tree.focus_set()))
+    tree.bind("<MouseWheel>", hide_model_text, add="+")
+    def scroll_from_model_text(event):
+        hide_model_text()
+        tree.event_generate("<MouseWheel>", delta=event.delta)
+        return "break"
+
+    model_text.bind("<MouseWheel>", scroll_from_model_text)
+    tree.bind("<Configure>", hide_model_text, add="+")
+    tree.configure(yscrollcommand=lambda first, last: (vsb.set(first, last), hide_model_text()))
     empty_lbl = tk.Label(tfr, text="还没有模型\n在上方手动添加，或按 F5 获取", bg=C["card"], fg=C["dim"],
                          font=F["ui"], justify="center")
     right_o = ttk.Frame(pw)
@@ -1176,6 +1238,10 @@ def build_gui():  # noqa: C901
                                          ("timeout", pelican_timeout_var)):
                             if key in options:
                                 var.set(options[key])
+                        for key, state_key in (("prompt_mode", "svg_prompt_mode"),
+                                               ("custom_prompt", "svg_custom_prompt")):
+                            if key in options:
+                                state[state_key] = options[key]
                         if save_now() is False:
                             raise OSError("设置写入失败，请查看日志")
                         sync_pelican_sources()
@@ -1232,6 +1298,7 @@ def build_gui():  # noqa: C901
         count_var.set(f"{len(state['models'])} 个模型 · 通 {ok_n} · 失败 {bad_n}" if state["models"] else "")
 
     def refresh_tree():
+        hide_model_text()
         selected = {tree.set(iid, "model") for iid in tree.selection()}
         tree.delete(*tree.get_children())
         state["rows"].clear()
@@ -1465,6 +1532,8 @@ def build_gui():  # noqa: C901
             "pelican_max_tokens": pelican_tokens_var.get(), "pelican_reasoning": pelican_reasoning_var.get(),
             "pelican_settings_version": PELICAN_SETTINGS_VERSION,
             "pelican_timeout": pelican_timeout_var.get(),
+            "svg_prompt_mode": state.get("svg_prompt_mode", "fixed"),
+            "svg_custom_prompt": state.get("svg_custom_prompt", ""),
             "providers": providers, "named_keys": state.get("named_keys", {}),
             "active_provider": provider_box.get(), "active_key": key_box.get(),
             "profile": profile_box.get(), "protocol": protocol_box.get(),
@@ -1508,6 +1577,9 @@ def build_gui():  # noqa: C901
         if data.get("pelican_reasoning") in PELICAN_REASONING_LEVELS:
             pelican_reasoning_var.set(data["pelican_reasoning"])
         put(pelican_timeout_var, "pelican_timeout")
+        state["svg_prompt_mode"] = "custom" if data.get("svg_prompt_mode") == "custom" else "fixed"
+        custom = data.get("svg_custom_prompt", "")
+        state["svg_custom_prompt"] = custom if isinstance(custom, str) and len(custom) <= 12000 else ""
         if isinstance(data.get("insecure"), bool):
             insecure_var.set(data["insecure"])
         if isinstance(data.get("stream"), bool):
@@ -2062,7 +2134,8 @@ def build_gui():  # noqa: C901
             sources["current"] = cfg
         selected_models = [tree.set(i, "model") for i in tree.selection()]
         preview.set_sources(sources, selected_provider, selected_models,
-                            pelican_reasoning_var.get(), pelican_tokens_var.get(), pelican_timeout_var.get())
+                            pelican_reasoning_var.get(), pelican_tokens_var.get(), pelican_timeout_var.get(),
+                            state.get("svg_prompt_mode", "fixed"), state.get("svg_custom_prompt", ""))
 
     def save_pelican_options(payload):
         """Validate in the HTTP thread; apply and save only in the Tk thread."""
@@ -2080,6 +2153,15 @@ def build_gui():  # noqa: C901
             if payload["reasoning"] not in PELICAN_REASONING_LEVELS:
                 raise ValueError("请选择有效的推理强度")
             options["reasoning"] = payload["reasoning"]
+        if "prompt_mode" in payload:
+            if payload["prompt_mode"] not in ("fixed", "custom"):
+                raise ValueError("请选择固定鹈鹕题目或自定义 SVG 提示词")
+            options["prompt_mode"] = payload["prompt_mode"]
+        if "custom_prompt" in payload:
+            value = payload["custom_prompt"]
+            if not isinstance(value, str) or len(value) > 12000:
+                raise ValueError("自定义 SVG 提示词须为不超过 12000 字的文本")
+            options["custom_prompt"] = value
         if not options:
             raise ValueError("未提供可保存的参数")
         done, reply = threading.Event(), {}
@@ -2133,6 +2215,15 @@ def build_gui():  # noqa: C901
                 or any(not isinstance(m, str) or not m.strip() or len(m) > 300 for m in models)):
             raise ValueError("请选择或输入 1 至 40 个模型")
         models = list(dict.fromkeys(m.strip() for m in models))
+        prompt_mode = payload.get("prompt_mode", "fixed")
+        if prompt_mode not in ("fixed", "custom"):
+            raise ValueError("无效的提示词模式")
+        custom_prompt = payload.get("custom_prompt", "")
+        if not isinstance(custom_prompt, str) or len(custom_prompt) > 12000:
+            raise ValueError("自定义 SVG 提示词须为不超过 12000 字的文本")
+        if prompt_mode == "custom" and not custom_prompt.strip():
+            raise ValueError("请先填写自定义 SVG 提示词")
+        prompt = custom_prompt if prompt_mode == "custom" else PELICAN_PROMPT
         try:
             requested_tokens = payload.get("max_tokens", cfg.get("pelican_tokens", PELICAN_DEFAULT_MAX_TOKENS))
             tokens = int(requested_tokens)
@@ -2157,7 +2248,8 @@ def build_gui():  # noqa: C901
                              auth_mode=cfg.get("auth_mode", "auto"),
                              client_version=cfg.get("client_version", ""), ua=cfg.get("ua", ""),
                              extra_headers=headers) for _ in models]
-        records = [preview.store.begin(model, cfg["name"], client.protocol, tokens, reasoning_effort)
+        records = [preview.store.begin(model, cfg["name"], client.protocol, tokens, reasoning_effort,
+                                       prompt=prompt, prompt_mode=prompt_mode)
                    for model, client in zip(models, clients)]
         ui_log(f"[*] 已加入 {len(records)} 个鹈鹕测试：{cfg['name']}；结果显示在主界面鹈鹕标签页", "info")
 
@@ -2238,7 +2330,7 @@ def build_gui():  # noqa: C901
         return "break"
 
     def on_right(e):
-        iid = tree.identify_row(e.y)
+        iid = text_cell["iid"] if e.widget is model_text else tree.identify_row(e.y)
         if iid and iid not in tree.selection():
             tree.selection_set(iid)
         if not tree.selection():
@@ -2262,6 +2354,7 @@ def build_gui():  # noqa: C901
 
     tree.bind("<Double-1>", lambda e: act_chat() if tree.identify_row(e.y) else None)
     tree.bind("<Button-3>", on_right)
+    model_text.bind("<Button-3>", on_right)
     tree.bind("<Control-c>", lambda e: copy_model_id(_event=e))
     tree.bind("<Control-KeyPress-c>", lambda e: copy_model_id(_event=e))
     tree.bind("<Control-Insert>", lambda e: copy_model_id(_event=e))

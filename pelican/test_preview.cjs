@@ -8,6 +8,7 @@ const elements = new Map();
 function element(id) {
   if (!elements.has(id)) elements.set(id, {
     value: '', dataset: {}, textContent: '', addEventListener() {},
+    classList: {toggle() {}},
     checkValidity() { return Number.isInteger(Number(this.value)) && Number(this.value) >= (id === 'limit' ? 256 : 1); },
   });
   return elements.get(id);
@@ -60,8 +61,8 @@ async function main() {
   release();
   await pending;
   assert.deepEqual(writes, [
-    {reasoning: '低', max_tokens: '49152', timeout: '420'},
-    {reasoning: '低', max_tokens: '65536', timeout: '420'},
+    {reasoning: '低', max_tokens: '49152', timeout: '420', prompt_mode: 'fixed', custom_prompt: ''},
+    {reasoning: '低', max_tokens: '65536', timeout: '420', prompt_mode: 'fixed', custom_prompt: ''},
   ]);
   assert.equal(element('save-status').textContent, '已保存');
   // Edits in the main app must propagate back into the embedded controls.
@@ -69,10 +70,21 @@ async function main() {
   assert.equal(element('limit').value, '8192');
   assert.equal(element('timeout').value, '900');
   assert.equal(element('reasoning').dataset.value, '高');
+  // Custom text is saved verbatim; switching back preserves the draft.
+  vm.runInContext("$('custom-prompt').value='画一个旋转的 SVG 星球';$('custom-mode').onclick()", context);
+  await vm.runInContext('saveOptions()', context);
+  assert.equal(writes[2].prompt_mode, 'custom');
+  assert.equal(writes[2].custom_prompt, '画一个旋转的 SVG 星球');
+  assert.equal(element('custom-editor').hidden, false);
+  vm.runInContext("$('fixed-prompt').onclick()", context);
+  await vm.runInContext('saveOptions()', context);
+  assert.equal(writes[3].prompt_mode, 'fixed');
+  assert.equal(writes[3].custom_prompt, '画一个旋转的 SVG 星球');
+  assert.equal(element('custom-editor').hidden, true);
   // Invalid partial input must not send a save or claim success.
   vm.runInContext("$('limit').value='';changed()", context);
   await assert.rejects(vm.runInContext('saveOptions()', context));
-  assert.equal(writes.length, 2);
+  assert.equal(writes.length, 4);
   assert.equal(element('save-status').textContent, '保存失败');
   // Right-click menus stay inside the viewport and address the clicked card.
   vm.runInContext(`records=[{id:'abc',status:'complete'},{id:'running',status:'running'}];
