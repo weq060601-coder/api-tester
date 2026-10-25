@@ -36,6 +36,8 @@ main{flex:1;min-height:0;min-width:0;display:grid;grid-template-columns:minmax(0
 .provider{color:#8b949e;font-size:11px;margin-top:4px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .preview-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;min-height:34px}
 .status{font-size:11px;color:#2dd4bf;overflow-wrap:anywhere;line-height:1.5}.status.failed{color:#f85149}
+.speed{font-size:12px;font-weight:600;color:#2dd4bf;line-height:1.7;font-variant-numeric:tabular-nums}.speed.pending{color:#8b949e;font-weight:400}
+.run-metrics{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:7px 10px;border-bottom:1px solid #2a3341;color:#8b949e;font-size:11px;flex-shrink:0;font-variant-numeric:tabular-nums}
 .time{color:#6e7681;font-size:10px;margin-top:3px}.thumb{position:relative;width:112px;height:70px;overflow:hidden;border-radius:4px;background:white;flex-shrink:0;border:1px solid #3b4656}
 .thumb iframe{width:640px;height:400px;transform:scale(.175);transform-origin:0 0;position:absolute;left:0;top:0;border:0;pointer-events:none}
 .delete{border:0;padding:1px 4px;background:transparent;color:#6e7681;font-size:17px;line-height:1}
@@ -68,6 +70,7 @@ footer{flex-shrink:0;border-top:1px solid #2a3341;color:#6e7681;font-size:10px;p
 <div id="notice" role="status"></div>
 <main><section class="history"><div class="list-head"><span>测试记录</span><span id="count"></span></div><div id="records"></div></section>
 <section class="detail"><div class="detail-head"><span id="title">作品预览</span><button id="animation" class="active">动画</button><button id="source">原始回复</button></div>
+<div id="run-metrics" class="run-metrics" hidden><strong id="detail-speed" class="speed"></strong><span id="detail-tokens"></span><span id="detail-elapsed"></span></div>
 <iframe id="art" sandbox title="模型作品预览" referrerpolicy="no-referrer" draggable="false" hidden></iframe>
 <pre id="raw" hidden></pre><div id="message">在左侧模型列表手动添加或获取模型，并选中要测试的模型。&#10;确认本页参数后点击「开始生成」。</div>
 </section></main>
@@ -222,10 +225,28 @@ $('generate').onclick=async()=>{
 async function selectRecord(id){selected=id;rawMode=false;renderRecords();await renderDetail()}
 $('animation').onclick=()=>{rawMode=false;renderDetail()};
 $('source').onclick=()=>{rawMode=true;renderDetail()};
+function speedInfo(record){
+ if(record.status==='running'){
+  if(Number.isFinite(record.live_tps))return {text:(record.live_estimated?'≈ ':'')+record.live_tps.toFixed(2)+' t/s'+(record.live_estimated?'（估算）':''),pending:false,
+   title:record.live_estimated?'实时估算：ASCII 每 4 字符约 1 token，其他字符每字符约 1 token；包含收到的可见思考，除以请求总耗时。实际 token 以结束时接口报告为准。':'接口当前报告的输出 token ÷ 请求总耗时（包含等待）'};
+  return {text:record.progress_phase==='queued'?'t/s · 排队中':'t/s · 等待首字',pending:true,title:'尚未收到可计量的输出；不把等待显示为 0 t/s。接口不返回思考内容时，无法测量这一阶段的速度。'};
+ }
+ return {text:Number.isFinite(record.tps)?record.tps.toFixed(2)+' t/s':'t/s · 未报告',pending:!Number.isFinite(record.tps),
+  title:'平均速度 = 接口报告的输出 token ÷ 总耗时（包含等待）。接口未报告 token 时不伪造准确值。'};
+}
+function renderSpeed(element,record){const info=speedInfo(record);element.textContent=info.text;element.title=info.title;element.className='speed'+(info.pending?' pending':'')}
+function progressText(record){return record.progress_phase==='queued'?'排队中':record.progress_phase==='reasoning'?'思考中 · 已收到 '+(record.reasoning_characters||0)+' 字符思考':(record.characters?'生成中':'等待输出')+' · '+(record.characters||0)+' 字符'}
+function renderMetrics(record){
+ $('run-metrics').hidden=!record;if(!record)return;
+ renderSpeed($('detail-speed'),record);
+ $('detail-tokens').textContent=record.status==='running'?progressText(record):Number.isFinite(record.output_tokens)?'输出 '+record.output_tokens+' token':'输出 token 未报告';
+ $('detail-elapsed').textContent=(record.status==='running'?'已用 ':'总耗时 ')+(Number.isFinite(record.elapsed)?record.elapsed.toFixed(1):'0.0')+' 秒';
+}
 async function renderDetail(){
  if(!pageActive){releaseArtwork();return}
  const record=records.find(r=>r.id===selected);
- const nextState=JSON.stringify([selected,rawMode,record?.status,record?.characters,record?.error]);
+ renderMetrics(record);
+ const nextState=JSON.stringify([selected,rawMode,record?.status,record?.characters,record?.error,record?.progress_phase,record?.reasoning_characters]);
  if(detailState===nextState)return;detailState=nextState;
  if(rawMode||!record||record.status!=='complete')releaseArtwork();
  $('animation').classList.toggle('active',!rawMode);$('source').classList.toggle('active',rawMode);
@@ -233,7 +254,7 @@ async function renderDetail(){
  if(!record){$('message').hidden=false;$('message').className='';$('message').textContent='在左侧选择模型并生成，或选择已有测试记录。';return}
  $('title').textContent=record.model+' · '+record.provider+' · '+(record.prompt_mode==='custom'?'自定义 SVG':'固定鹈鹕');$('title').title=record.prompt||$('title').textContent;
  if(rawMode){$('raw').hidden=false;
-  if(record.status==='running'){rawId='';$('raw').textContent='正在生成 · 已收到 '+(record.characters||0)+' 字符\n完整原始回复会在本次请求结束后保存。';return}
+  if(record.status==='running'){rawId='';$('raw').textContent=progressText(record)+'\n完整原始回复会在本次请求结束后保存。';return}
   if(rawId!==record.id){rawId=record.id;$('raw').textContent='正在读取…';
    try{const response=await fetch('raw/'+record.id);const text=await response.text();if(rawId===record.id)$('raw').textContent=text||'尚未收到正文。'}
    catch(e){$('raw').textContent='无法读取原始回复。'}}
@@ -243,7 +264,7 @@ async function renderDetail(){
   $('art').hidden=false;if(detailVersion!==record.id){detailVersion=record.id;$('art').src='artwork/'+record.id}
  }else{
   $('message').hidden=false;$('message').className=record.status==='failed'?'failed':'';
-  $('message').textContent=record.status==='running'?'正在生成 · 已收到 '+(record.characters||0)+' 字符\n完成后自动显示预览。':record.error+'\n\n可切换「原始回复」查看具体内容。';
+  $('message').textContent=record.status==='running'?progressText(record)+'\n速度和耗时显示在上方，完成后自动显示预览。':record.error+'\n\n可切换「原始回复」查看具体内容。';
  }
 }
 async function removeRecord(record){
@@ -253,7 +274,7 @@ async function removeRecord(record){
  }catch(e){$('notice').textContent='移除失败，请重试。'}
 }
 function renderRecords(){
- const version=JSON.stringify(records.map(r=>[r.id,r.status,r.characters,r.error]))+selected;
+ const version=JSON.stringify(records.map(r=>[r.id,r.status,r.characters,r.error,r.tps,r.live_tps,r.live_estimated,r.elapsed,r.progress_phase,r.reasoning_characters]))+selected;
  if(recordsVersion===version){queueThumbnails();return}recordsVersion=version;
  const root=$('records'),ids=new Set(records.map(r=>r.id));
  for(const [id,card]of cards){if(!ids.has(id)){card.remove();cards.delete(id)}}
@@ -263,7 +284,7 @@ function renderRecords(){
  for(const record of records){
  let card=cards.get(record.id);
  if(!card){card=document.createElement('article');card.className='record';card.dataset.run=record.id;card.tabIndex=0;
- card.innerHTML='<div class="row-head"><div class="identity"><div class="model"></div><div class="provider"></div></div><button class="delete" aria-label="移除记录" title="移除记录">×</button></div><div class="preview-row"><div><div class="status"></div><div class="time"></div></div><div class="preview"></div></div>';
+ card.innerHTML='<div class="row-head"><div class="identity"><div class="model"></div><div class="provider"></div></div><button class="delete" aria-label="移除记录" title="移除记录">×</button></div><div class="preview-row"><div><div class="status"></div><div class="speed"></div><div class="time"></div></div><div class="preview"></div></div>';
  cards.set(record.id,card)}
  card.classList.toggle('active',record.id===selected);card.classList.toggle('complete',record.status==='complete');card.onclick=()=>selectRecord(record.id);
  card.oncontextmenu=event=>showRecordMenu(event,record,card);
@@ -271,10 +292,10 @@ function renderRecords(){
  card.querySelector('.delete').onclick=e=>{e.stopPropagation();removeRecord(record)};
  card.querySelector('.model').textContent=record.model;card.querySelector('.model').title=record.model;
  card.querySelector('.provider').textContent=record.provider+' · '+(record.prompt_mode==='custom'?'自定义 SVG':'固定鹈鹕');card.querySelector('.provider').title=record.prompt||record.provider;
- card.querySelector('.time').textContent=record.created.replace('T',' ').slice(5,16)+(Number.isFinite(record.tps)?' · '+record.tps.toFixed(2)+' t/s':'');
- card.querySelector('.time').title='平均速度 = 接口报告的输出 token ÷ 总耗时（包含等待）';
+ renderSpeed(card.querySelector('.speed'),record);
+ card.querySelector('.time').textContent=record.created.replace('T',' ').slice(5,16)+(record.status==='running'&&Number.isFinite(record.elapsed)?' · '+record.elapsed.toFixed(1)+' 秒':'');
  const status=card.querySelector('.status');status.className='status'+(record.status==='failed'?' failed':'');
- status.textContent=record.status==='complete'?'已生成':record.status==='running'?'生成中 · '+(record.characters||0)+' 字符':'未生成作品';
+ status.textContent=record.status==='complete'?'已生成':record.status==='running'?progressText(record):'未生成作品';
  status.title=record.error||'';
  if(card!==cursor)root.insertBefore(card,cursor);cursor=card.nextSibling;
  }

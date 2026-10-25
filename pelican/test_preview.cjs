@@ -44,6 +44,30 @@ const context = vm.createContext({
 });
 vm.runInContext(script, context);
 async function main() {
+  // The benchmark page displays speed while generating, not only after finish.
+  vm.runInContext(`records=[{id:'live',status:'running',progress_phase:'reasoning',characters:0,
+    reasoning_characters:100,live_tps:23.5,live_estimated:true,elapsed:4}];selected='live';renderDetail()`, context);
+  assert.match(element('detail-speed').textContent, /≈ 23.50 t\/s.*估算/);
+  assert.match(element('detail-tokens').textContent, /思考中.*100/);
+  assert.equal(element('detail-elapsed').textContent, '已用 4.0 秒');
+  // Metrics-only updates must render even when the artwork/detail signature is unchanged.
+  vm.runInContext('records[0].live_tps=18;records[0].elapsed=5;renderDetail()', context);
+  assert.match(element('detail-speed').textContent, /18.00 t\/s/);
+  assert.equal(element('detail-elapsed').textContent, '已用 5.0 秒');
+  vm.runInContext(`records[0]={id:'live',status:'complete',tps:42,output_tokens:210,elapsed:5};renderDetail()`, context);
+  assert.equal(element('detail-speed').textContent, '42.00 t/s');
+  assert.equal(element('detail-tokens').textContent, '输出 210 token');
+  const artwork = element('art').src;
+  vm.runInContext('records[0].tps=43;renderDetail()', context);
+  assert.equal(element('detail-speed').textContent, '43.00 t/s');
+  assert.equal(element('art').src, artwork);
+  vm.runInContext(`records[0]={id:'live',status:'running',progress_phase:'waiting',characters:0,elapsed:8};renderDetail()`, context);
+  assert.match(element('detail-speed').textContent, /等待首字/);
+  assert.equal(element('detail-elapsed').textContent, '已用 8.0 秒');
+  vm.runInContext(`records[0].status='failed';renderDetail()`, context);
+  assert.match(element('detail-speed').textContent, /未报告/);
+  vm.runInContext("records=[];selected='';renderDetail()", context);
+  assert.equal(element('run-metrics').hidden, true);
   // Every test uses the shared model list in the main app.
   assert.equal(page.includes('id="manual"'), false);
   vm.runInContext("context.providers=[{id:'current',name:'MOCK'}];context.selected_provider='current';context.selected_models=['selected-model'];updateSelection()", context);

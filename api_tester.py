@@ -337,7 +337,7 @@ class ApiClient:
             return ApiResult(False, 0, None, "", error=f"{type(e).__name__}: {e}",
                              elapsed=time.perf_counter() - t0)
 
-    def request_stream(self, path: str, body: dict, on_delta=None) -> ApiResult:
+    def request_stream(self, path: str, body: dict, on_delta=None, on_progress=None) -> ApiResult:
         """SSE 流式请求, 统计首字延迟 TTFB 与总耗时。"""
         req = self._build(path, body, stream=True)
         t0 = time.perf_counter()
@@ -347,6 +347,32 @@ class ApiClient:
         ended = False
         analysis_items = set()
         usage = {}
+        ascii_characters = nonascii_characters = reasoning_characters = 0
+        progress_phase = "waiting"
+
+        def progress(pieces, reasoning, reported):
+            nonlocal ascii_characters, nonascii_characters, reasoning_characters, progress_phase
+            if not on_progress:
+                return
+            text = "".join(pieces)
+            if not text and not reasoning and not isinstance(reported, dict):
+                return
+            received = text + reasoning
+            ascii_count = sum(ord(character) < 128 for character in received)
+            ascii_characters += ascii_count
+            nonascii_characters += len(received) - ascii_count
+            reasoning_characters += len(reasoning)
+            if text:
+                progress_phase = "output"
+            elif reasoning:
+                progress_phase = "reasoning"
+            tokens = (reported.get("completion_tokens", reported.get("output_tokens"))
+                      if isinstance(reported, dict) else None)
+            if type(tokens) is not int or tokens < 0:
+                tokens = None
+            on_progress({"estimated_output_tokens": ascii_characters / 4 + nonascii_characters,
+                         "live_output_tokens": tokens, "reasoning_characters": reasoning_characters,
+                         "progress_phase": progress_phase, "ttfb": ttfb})
 
         def result(ok, status, text, error=""):
             return ApiResult(ok, status, None, text, error=error,
@@ -382,11 +408,25 @@ class ApiClient:
                         item = obj.get("item") or {}
                         if item.get("type") == "reasoning" or item.get("channel") in ("analysis", "commentary"):
                             analysis_items.add(item.get("id"))
-                    if (obj.get("type") == "response.output_text.delta"
-                            and (obj.get("item_id") in analysis_items
-                                 or obj.get("channel") in ("analysis", "commentary"))):
-                        continue
-                    pieces, done, err = parse_stream_event(obj)
+                    analysis = (obj.get("type") == "response.output_text.delta"
+                                and (obj.get("item_id") in analysis_items
+                                     or obj.get("channel") in ("analysis", "commentary")))
+                    reasoning = ""
+                    if on_progress:
+                        for choice in obj.get("choices") or []:
+                            delta = choice.get("delta") or {}
+                            value = delta.get("reasoning_content") or delta.get("reasoning")
+                            if isinstance(value, str):
+                                reasoning += value
+                        delta = obj.get("delta")
+                        if obj.get("type") == "content_block_delta" and isinstance(delta, dict):
+                            if delta.get("type") == "thinking_delta":
+                                reasoning += delta.get("thinking") or ""
+                        if analysis or obj.get("type") in ("response.reasoning_text.delta",
+                                                          "response.reasoning_summary_text.delta"):
+                            if isinstance(delta, str):
+                                reasoning += delta
+                    pieces, done, err = ([], False, "") if analysis else parse_stream_event(obj)
                     if done and not chunks and not pieces and not err:
                         final = extract_content(obj.get("response"))
                         if final:
@@ -397,6 +437,7 @@ class ApiClient:
                         chunks.append(piece)
                         if on_delta:
                             on_delta(piece)
+                    progress(pieces, reasoning, reported)
                     if err:
                         stream_err = err
                     if done or err:
@@ -446,11 +487,11 @@ class ApiClient:
 
     def test_chat(self, model: str, prompt: str = "只回复两个字：在线", stream: bool = False,
                   max_tokens: int = 32, temperature: float = 0.0, on_delta=None,
-                  with_image: bool = False, reasoning_effort: str = "") -> ApiResult:
+                  with_image: bool = False, reasoning_effort: str = "", on_progress=None) -> ApiResult:
         body = self.chat_body(model, prompt, stream, max_tokens, temperature, with_image,
                               reasoning_effort)
         path = self.chat_path()
-        res = self.request_stream(path, body, on_delta) if stream else self.request(path, body)
+        res = self.request_stream(path, body, on_delta, on_progress) if stream else self.request(path, body)
         if res.ok:
             if stream:
                 res.data = {"choices": [{"message": {"content": res.text}}], "usage": res.usage}

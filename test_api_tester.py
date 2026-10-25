@@ -129,6 +129,86 @@ class PelicanTests(unittest.TestCase):
             result = cli.test_chat("test", stream=True)
         self.assertEqual(result.usage, {"input_tokens": 9, "output_tokens": 40})
 
+    def test_live_speed_tracks_reasoning_without_leaking_it_into_artwork(self):
+        import io
+        class Response(io.BytesIO):
+            status = 200
+        protocols = [
+            ("default", [
+                {"choices": [{"delta": {"reasoning_content": "思考abcd"}}]},
+                {"choices": [{"delta": {"content": "<svg><circle r='1'/></svg>"}}]},
+                {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+                {"choices": [], "usage": {"completion_tokens": 80}},
+            ]),
+            ("claude-code", [
+                {"type": "message_start", "message": {"usage": {"output_tokens": 0}}},
+                {"type": "content_block_delta", "delta": {"type": "thinking_delta", "thinking": "思考abcd"}},
+                {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "<svg><circle r='1'/></svg>"}},
+                {"type": "message_delta", "usage": {"output_tokens": 80}},
+                {"type": "message_stop"},
+            ]),
+            ("codex", [
+                {"type": "response.output_item.added", "item": {"id": "think", "channel": "analysis"}},
+                {"type": "response.output_text.delta", "item_id": "think", "delta": "思考abcd"},
+                {"type": "response.output_text.delta", "item_id": "answer", "delta": "<svg><circle r='1'/></svg>"},
+                {"type": "response.completed", "response": {"usage": {"output_tokens": 80}}},
+            ]),
+        ]
+        for profile, events in protocols:
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                store = PelicanStore(Path(directory))
+                cli = api_tester.ApiClient("http://127.0.0.1:9/v1", profile=profile)
+                record = store.begin("mock", "MOCK", cli.protocol, 32768)
+                snapshots = []
+                original_progress = store.progress
+                def progress(*args, **kwargs):
+                    original_progress(*args, **kwargs)
+                    # Polls continue to tick during a pause between SSE events.
+                    with patch("pelican.benchmark.time.perf_counter", return_value=store.started[record["id"]] + 2):
+                        snapshots.append(store.list_runs()[0])
+                data = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events) + b"data: [DONE]\n\n"
+                with patch.object(cli.opener, "open", return_value=Response(data)), \
+                        patch.object(store, "progress", side_effect=progress):
+                    result = run_pelican_test(cli, store, record)
+                thinking = next(s for s in snapshots if s.get("progress_phase") == "reasoning")
+                self.assertEqual(thinking["characters"], 0)
+                self.assertEqual(thinking["reasoning_characters"], 6)
+                self.assertTrue(thinking["live_estimated"])
+                self.assertEqual(thinking["live_tps"], 1.5)
+                self.assertEqual(snapshots[-1]["live_output_tokens"], 80)
+                self.assertEqual(snapshots[-1]["live_tps"], 40)
+                self.assertFalse(snapshots[-1]["live_estimated"])
+                self.assertEqual(result["status"], "complete", result)
+                self.assertEqual(result["output_tokens"], 80)
+                self.assertNotIn("live_tps", result)
+                self.assertNotIn("estimated_output_tokens", result)
+                self.assertNotIn("思考", store.read(record["id"], "response.txt").decode())
+
+    def test_live_speed_waiting_stalling_and_parallel_runs_are_independent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PelicanStore(Path(directory))
+            a, b = [store.begin(model, "MOCK", "openai", 32768) for model in ("a", "b")]
+            self.assertTrue(all(r["progress_phase"] == "queued" for r in store.list_runs()))
+            with patch("pelican.benchmark.time.perf_counter", return_value=100):
+                store.start(a["id"])
+                store.start(b["id"])
+            with patch("pelican.benchmark.time.perf_counter", return_value=105):
+                self.assertIsNone(next(r for r in store.list_runs() if r["id"] == a["id"])["live_tps"])
+            store.progress(a["id"], 400, metrics={"estimated_output_tokens": 100, "progress_phase": "output"})
+            store.progress(b["id"], 40, metrics={"estimated_output_tokens": 10, "progress_phase": "output"})
+            with patch("pelican.benchmark.time.perf_counter", return_value=110):
+                rates = {r["id"]: r["live_tps"] for r in store.list_runs()}
+                self.assertEqual(rates, {a["id"]: 10, b["id"]: 1})
+            with patch("pelican.benchmark.time.perf_counter", return_value=120):
+                self.assertEqual(next(r for r in store.list_runs() if r["id"] == a["id"])["live_tps"], 5)
+            store.remove(a["id"])
+            result = store.finish(a["id"], "partial", 20, "stream interrupted")
+            self.assertEqual(result["status"], "failed")
+            self.assertNotIn(a["id"], store.started)
+            self.assertEqual([r["id"] for r in store.list_runs()], [b["id"]])
+            self.assertFalse(any("live_tps" in json.loads(p.read_text(encoding="utf-8"))
+                                 for p in Path(directory).glob("*/run.json")))
+
     def test_custom_svg_prompt_is_sent_verbatim_and_fixed_prompt_is_unchanged(self):
         import hashlib
         self.assertEqual(hashlib.sha256(PELICAN_PROMPT.encode()).hexdigest(),

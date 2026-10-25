@@ -104,6 +104,7 @@ class PelicanStore:
         self.directory = Path(directory)
         self.lock = threading.RLock()
         self.records = {}
+        self.started = {}
         if self.directory.is_dir():
             for path in self.directory.glob("*/run.json"):
                 try:
@@ -145,6 +146,7 @@ class PelicanStore:
                   "protocol": protocol, "created": datetime.now().astimezone().isoformat(timespec="seconds"),
                   "status": "running", "elapsed": 0, "error": "", "max_tokens": max_tokens,
                   "reasoning_effort": reasoning_effort, "characters": 0, "validation_version": 2,
+                  "progress_phase": "queued",
                   "prompt": prompt, "prompt_mode": prompt_mode}
         with self.lock:
             self._write(record)
@@ -169,19 +171,43 @@ class PelicanStore:
                           characters=len(raw))
             if metrics is not None:
                 record.update({key: metrics.get(key) for key in ("output_tokens", "tps", "ttfb")})
+            for key in ("live_output_tokens", "estimated_output_tokens", "progress_phase"):
+                record.pop(key, None)
+            self.started.pop(run_id, None)
             self._write(record)
             self.records[run_id] = record
             return dict(record)
 
     def list_runs(self):
         with self.lock:
-            return [dict(r) for r in sorted(self.records.values(),
-                                           key=lambda r: (r["created"], r["id"]), reverse=True)
-                    if not r.get("removed")]
+            records = []
+            now = time.perf_counter()
+            for record in sorted(self.records.values(), key=lambda r: (r["created"], r["id"]), reverse=True):
+                if record.get("removed"):
+                    continue
+                record = dict(record)
+                if record["status"] == "running" and record["id"] in self.started:
+                    record["elapsed"] = round(max(0, now - self.started[record["id"]]), 1)
+                    tokens = record.get("live_output_tokens")
+                    record["live_estimated"] = tokens is None
+                    if tokens is None:
+                        tokens = record.get("estimated_output_tokens", 0)
+                    record["live_tps"] = (round(tokens / record["elapsed"], 2)
+                                          if tokens > 0 and record["elapsed"] > 0 else None)
+                records.append(record)
+            return records
 
-    def progress(self, run_id: str, characters: int):
+    def start(self, run_id: str):
         with self.lock:
-            self.records[run_id]["characters"] = characters
+            self.started[run_id] = time.perf_counter()
+            self.records[run_id]["progress_phase"] = "waiting"
+
+    def progress(self, run_id: str, characters: int | None = None, *, metrics: dict | None = None):
+        with self.lock:
+            if characters is not None:
+                self.records[run_id]["characters"] = characters
+            if metrics:
+                self.records[run_id].update(metrics)
 
     def remove(self, run_id: str):
         """Remove from history durably, including running jobs, without breaking the worker."""
@@ -219,6 +245,7 @@ def run_pelican_test(client, store: PelicanStore, record: dict, on_delta=None) -
     """Send only the run's prompt, without other artwork, history, tools or images."""
     import time
     start = time.perf_counter()
+    store.start(record["id"])
     chunks = []
     characters = 0
 
@@ -234,7 +261,8 @@ def run_pelican_test(client, store: PelicanStore, record: dict, on_delta=None) -
         result = client.test_chat(record["model"], record.get("prompt", PELICAN_PROMPT), stream=True,
                                   max_tokens=record["max_tokens"], temperature=0.0,
                                   on_delta=receive, with_image=False,
-                                  reasoning_effort=record.get("reasoning_effort", ""))
+                                  reasoning_effort=record.get("reasoning_effort", ""),
+                                  on_progress=lambda metrics: store.progress(record["id"], metrics=metrics))
         return store.finish(record["id"], result.text, result.elapsed,
                             "" if result.ok else (result.error or "模型请求失败"), metrics=result.speed_metrics())
     except Exception as exc:
