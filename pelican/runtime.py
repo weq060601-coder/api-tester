@@ -8,6 +8,8 @@ _LOCK = threading.Lock()
 
 
 def ensure_runtime() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable)
     # Reuse the installed venv at its original absolute path. Moving an
     # existing Windows venv would break its generated launchers.
     directory = Path(__file__).resolve().parent.parent / ".preview-venv"

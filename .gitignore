@@ -9,6 +9,9 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .preview-venv/
+.build-venv/
+build/
+dist/
 
 # Local screenshots and generated diagnostics
 screenshot.png

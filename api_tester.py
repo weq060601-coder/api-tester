@@ -35,13 +35,14 @@ import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from app_paths import APP_DIRECTORY
 
 from pelican import (PELICAN_DEFAULT_MAX_TOKENS, PELICAN_SETTINGS_VERSION, PELICAN_PROMPT, RESULTS_PATH,
                      PelicanPreview, PelicanStore, migrate_legacy_files,
                      run_pelican_test, saved_output_limit)
 
 # GUI 的连接设置、API Key 和测试结果自动保存到这里, 下次打开时恢复
-SETTINGS_PATH = Path(__file__).with_name("settings.json")
+SETTINGS_PATH = APP_DIRECTORY / "settings.json"
 PELICAN_RESULTS_PATH = RESULTS_PATH
 
 APP_TITLE = "本地 API 测试台 · 模型获取 / 连通性检测"
@@ -2279,7 +2280,9 @@ def build_gui():  # noqa: C901
                 preview.embed(parent_handle)
                 uiq.put(("preview_ready",))
             except Exception as exc:
-                message = f"内嵌预览加载失败：{exc}\n可运行 python -m pelican.runtime 修复依赖"
+                repair = ("请确认系统已安装 Microsoft Edge WebView2 Runtime" if getattr(sys, "frozen", False)
+                          else "可运行 python -m pelican.runtime 修复依赖")
+                message = f"内嵌预览加载失败：{exc}\n{repair}"
                 uiq.put(("preview_error", message))
                 ui_log(f"[!!] {message}", "err")
         threading.Thread(target=launch, daemon=True).start()

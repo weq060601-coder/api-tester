@@ -1,7 +1,8 @@
-"""All pelican assets and generated files live inside this package directory."""
+"""Generated files live beside the source app or portable executable."""
 from pathlib import Path
+from app_paths import APP_DIRECTORY
 
-DIRECTORY = Path(__file__).resolve().parent
+DIRECTORY = APP_DIRECTORY / "pelican"
 RESULTS_PATH = DIRECTORY / "results"
 DIAGNOSTICS_PATH = DIRECTORY / "diagnostics"
 

@@ -2,7 +2,21 @@
 
 OpenAI 兼容 API 测试工具。API 测试和主界面只使用 Python 标准库 `urllib` + `tkinter`。
 获取模型 + 测连通性 + 流式首字延迟 + 批量测速 + Embedding + 视觉识图 + 绘图 + 鹈鹕绘制对比 + 结果导出。
-鹈鹕预览是主界面「鹈鹕测试」标签内的单一原生 WebView2 区域，与主界面使用同一套深色、青绿色样式；并发测试只复用这一个区域，不为每个模型创建窗口。渲染器作为固定子控件跟随标签页尺寸变化。其 `pywebview` 依赖安装在本项目的 `.preview-venv`，不修改全局 Python 环境。
+鹈鹕预览是主界面「鹈鹕测试」标签内的单一原生 WebView2 区域，与主界面使用同一套深色、青绿色样式；并发测试只复用这一个区域，不为每个模型创建窗口。渲染器作为固定子控件跟随标签页尺寸变化。源码版的 `pywebview` 依赖安装在本项目的 `.preview-venv`，不修改全局 Python 环境；绿色 EXE 已内置这些依赖。
+
+## Windows 绿色版
+
+解压 `dist/API-Tester-Windows-x64-portable.zip`，双击其中的 `API-Tester.exe`，无需安装 Python、无需管理员权限。也可以只携带这个 EXE。支持 Windows 10/11 x64，鹈鹕内嵌预览需要系统 Microsoft Edge WebView2 Runtime 和 .NET Framework 4.6.2+；Windows 11 通常已具备。如果缺少 WebView2，请安装[微软运行时](https://developer.microsoft.com/microsoft-edge/webview2/)。
+
+配置和 Key 保存在 EXE 旁的 `settings.json`，作品保存在旁边的 `pelican/results/`。请放在可写文件夹；更新时替换 EXE，迁移时同时带走自己的配置与作品。源码版用户可把这两项复制到 EXE 旁继续使用。发布包只含 EXE 和使用说明，不包含任何 Key、用户配置或作品。单文件启动会先解压运行组件到系统临时目录，首次可能需要几秒。
+
+在 Windows x64、Python 3.13 下重新构建：
+
+```powershell
+python build_tools/build.py
+```
+
+构建器使用独立 `.build-venv`，输出单文件 EXE、绿色版压缩包和 `dist/SHA256.json`。资源按白名单打包，仅包含程序代码、预览页面和运行依赖；不会把工作目录或用户数据整包收进去。构建环境与产物均排除在 Git 之外。
 
 ## 文件
 

@@ -249,15 +249,17 @@ RENDERER_PATH = Path(__file__).with_name("preview.py")
 def launch_embedded_preview(url: str, parent_handle: int):
     """Launch one renderer embedded in the supplied Tk tab host."""
     from .runtime import ensure_runtime
-    python = ensure_runtime()
-    helper = RENDERER_PATH
+    if getattr(sys, "frozen", False):
+        command = [sys.executable, "--preview-renderer"]
+    else:
+        command = [str(ensure_runtime()), str(RENDERER_PATH)]
     DIAGNOSTICS_PATH.mkdir(parents=True, exist_ok=True)
     log_path = DIAGNOSTICS_PATH / "preview-errors.log"
     ready_path = Path(tempfile.gettempdir()) / ("api-tester-preview-" + uuid.uuid4().hex + ".json")
     with log_path.open("a", encoding="utf-8") as log:
         log.write("\n--- 鹈鹕预览窗口启动 " + datetime.now().astimezone().isoformat(timespec="seconds") + " ---\n")
         log.flush()
-        process = subprocess.Popen([str(python), str(helper), url, "--parent", str(parent_handle),
+        process = subprocess.Popen([*command, url, "--parent", str(parent_handle),
                                     "--ready", str(ready_path)], stdout=log, stderr=log,
                                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
     return process, ready_path
