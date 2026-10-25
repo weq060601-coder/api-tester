@@ -205,9 +205,9 @@ def join_url(base: str, path: str) -> str:
 
 
 class ApiResult:
-    __slots__ = ("ok", "status", "data", "text", "error", "elapsed", "ttfb")
+    __slots__ = ("ok", "status", "data", "text", "error", "elapsed", "ttfb", "usage")
 
-    def __init__(self, ok, status=0, data=None, text="", error="", elapsed=0.0, ttfb=None):
+    def __init__(self, ok, status=0, data=None, text="", error="", elapsed=0.0, ttfb=None, usage=None):
         self.ok = ok
         self.status = status
         self.data = data
@@ -215,6 +215,17 @@ class ApiResult:
         self.error = error
         self.elapsed = elapsed
         self.ttfb = ttfb
+        reported = data.get("usage") if isinstance(data, dict) else None
+        self.usage = dict(usage if isinstance(usage, dict) else reported if isinstance(reported, dict) else {})
+
+    def speed_metrics(self):
+        """Request-average throughput using reported tokens, never character guesses."""
+        tokens = self.usage.get("completion_tokens", self.usage.get("output_tokens"))
+        if type(tokens) is not int or tokens < 0:
+            tokens = None
+        return {"output_tokens": tokens,
+                "tps": tokens / self.elapsed if tokens is not None and self.elapsed > 0 else None,
+                "elapsed": self.elapsed, "ttfb": self.ttfb}
 
     def __repr__(self):
         return f"<ApiResult ok={self.ok} status={self.status} {self.elapsed:.2f}s>"
@@ -334,6 +345,11 @@ class ApiClient:
         stream_err = ""
         ended = False
         analysis_items = set()
+        usage = {}
+
+        def result(ok, status, text, error=""):
+            return ApiResult(ok, status, None, text, error=error,
+                             elapsed=time.perf_counter() - t0, ttfb=ttfb, usage=usage)
         try:
             with self.opener.open(req, timeout=self.timeout) as resp:
                 if resp.status >= 400:
@@ -341,8 +357,6 @@ class ApiClient:
                     return ApiResult(False, resp.status, None, raw, error=f"HTTP {resp.status}",
                                      elapsed=time.perf_counter() - t0)
                 for rawline in resp:
-                    if ttfb is None:
-                        ttfb = time.perf_counter() - t0
                     line = rawline.decode("utf-8", "replace").strip()
                     if not line or not line.startswith("data:"):
                         continue
@@ -356,6 +370,13 @@ class ApiClient:
                         continue
                     if not isinstance(obj, dict):
                         continue
+                    reported = obj.get("usage")
+                    if obj.get("type") == "message_start":
+                        reported = (obj.get("message") or {}).get("usage")
+                    elif obj.get("type") in ("response.completed", "response.incomplete", "response.failed"):
+                        reported = (obj.get("response") or {}).get("usage")
+                    if isinstance(reported, dict):
+                        usage.update(reported)
                     if obj.get("type") == "response.output_item.added":
                         item = obj.get("item") or {}
                         if item.get("type") == "reasoning" or item.get("channel") in ("analysis", "commentary"):
@@ -370,6 +391,8 @@ class ApiClient:
                         if final:
                             pieces = [final]
                     for piece in pieces:
+                        if piece and ttfb is None:
+                            ttfb = time.perf_counter() - t0
                         chunks.append(piece)
                         if on_delta:
                             on_delta(piece)
@@ -377,26 +400,23 @@ class ApiClient:
                         stream_err = err
                     if done or err:
                         ended = True
-                        break
-                cost = time.perf_counter() - t0
+                        # Chat usage arrives AFTER finish_reason in a separate
+                        # chunk. Keep reading it until [DONE] or clean EOF.
+                        if err or not obj.get("choices"):
+                            break
                 text = "".join(chunks)
                 if stream_err:
-                    return ApiResult(False, resp.status, None, text or stream_err,
-                                     error=f"流内错误: {stream_err[:200]}", elapsed=cost, ttfb=ttfb)
+                    return result(False, resp.status, text or stream_err, f"流内错误: {stream_err[:200]}")
                 if not ended:
-                    return ApiResult(False, resp.status, None, text,
-                                     error="流式响应中断，未收到结束事件；已保留收到的正文", elapsed=cost, ttfb=ttfb)
-                return ApiResult(True, resp.status, text, text, elapsed=cost, ttfb=ttfb)
+                    return result(False, resp.status, text, "流式响应中断，未收到结束事件；已保留收到的正文")
+                return result(True, resp.status, text)
         except urllib.error.HTTPError as e:
             text = e.read().decode("utf-8", "replace") if hasattr(e, "read") else str(e)
-            return ApiResult(False, e.code, None, text, error=f"HTTP {e.code} {e.reason}",
-                             elapsed=time.perf_counter() - t0)
+            return result(False, e.code, text, f"HTTP {e.code} {e.reason}")
         except urllib.error.URLError as e:
-            return ApiResult(False, 0, None, "".join(chunks), error=f"网络错误: {e.reason}",
-                             elapsed=time.perf_counter() - t0)
+            return result(False, 0, "".join(chunks), f"网络错误: {e.reason}")
         except Exception as e:  # noqa: BLE001
-            return ApiResult(False, 0, None, "".join(chunks), error=f"{type(e).__name__}: {e}",
-                             elapsed=time.perf_counter() - t0)
+            return result(False, 0, "".join(chunks), f"{type(e).__name__}: {e}")
 
     # -- 业务封装 -----------------------------------------------------------
     def list_models(self) -> tuple[list[str], ApiResult]:
@@ -432,7 +452,7 @@ class ApiClient:
         res = self.request_stream(path, body, on_delta) if stream else self.request(path, body)
         if res.ok:
             if stream:
-                res.data = {"choices": [{"message": {"content": res.text}}]}
+                res.data = {"choices": [{"message": {"content": res.text}}], "usage": res.usage}
             content = extract_content(res.data)
             if content is None:
                 res.ok = False
@@ -494,6 +514,8 @@ class ApiClient:
         }
         if effort:
             body["reasoning_effort"] = effort
+        if stream:
+            body["stream_options"] = {"include_usage": True}
         return body
 
     def test_embedding(self, model: str, text: str = "ping") -> ApiResult:
@@ -1186,6 +1208,10 @@ def build_gui():  # noqa: C901
     preview_hint = tk.Label(preview_host, text="正在加载内嵌鹈鹕预览…", bg=C["card"], fg=C["muted"],
                             font=F["ui"], justify="center", wraplength=px(360))
     preview_hint.place(relx=0.5, rely=0.5, anchor="center")
+    speed_tab = ttk.Frame(nb, style="Card.TFrame")
+    nb.add(speed_tab, text="t/s 速度")
+    from speed_view import SpeedView
+    speed_view = SpeedView(speed_tab, colors=C, font=F["mono"])
     for tag, color in (("ok", C["ok"]), ("err", C["err"]), ("warn", C["warn"]), ("info", C["fg"]),
                        ("dim", C["muted"]), ("req", C["acc"]), ("ts", C["dim"])):
         log_txt.tag_configure(tag, foreground=color)
@@ -1278,6 +1304,8 @@ def build_gui():  # noqa: C901
                     detail_var.set(rest[0])
                 elif kind == "busy":
                     apply_busy(*rest)
+                elif kind == "speed":
+                    speed_view.add(rest[0])
                 elif kind == "model_row":
                     mid, last, st = rest
                     state["results"][mid] = (last, st)
@@ -1994,6 +2022,17 @@ def build_gui():  # noqa: C901
         threading.Thread(target=work, daemon=True).start()
 
     # ---------------- 动作: 单模型连通性 ----------------
+    def speed_source():
+        """Read the selected connection in Tk before starting a worker."""
+        return {"provider": state.get("active_provider") or normalize_base(base_var.get()),
+                "key_name": key_box.get() or "未命名 Key"}
+
+    def report_speed(model, result, kind, source):
+        metrics = result.speed_metrics()
+        uiq.put(("speed", {"model": model, **source, "kind": kind, "metrics": metrics,
+                           "ok": result.ok, "error": result.error}))
+        return f"{metrics['tps']:.2f} t/s" if metrics["tps"] is not None else "t/s 未报告"
+
     def act_chat():
         if state["testing"]:
             return
@@ -2011,13 +2050,11 @@ def build_gui():  # noqa: C901
             mt = 32
         set_busy(True, f"测试中: {model}")
         image = image_var.get()
+        prompt = prompt_var.get() or "ping"
+        source = speed_source()
         ui_log(f">>> POST {join_url(cli.base_url, cli.chat_path())}  model={model} "
                f"stream={stream} image={image}")
         resp_txt.delete("1.0", "end")
-
-        def on_delta(piece):
-            resp_txt.insert("end", piece)
-            resp_txt.see("end")
 
         def work():
             t0 = time.perf_counter()
@@ -2028,15 +2065,16 @@ def build_gui():  # noqa: C901
                 if now - st["last"] > 0.2:
                     uiq.put(("stat", f"流式接收中... {int((now - t0) * 1000)} ms"))
                     st["last"] = now
-                root.after(0, on_delta, p)
+                uiq.put(("delta", p))
 
-            res = cli.test_chat(model, prompt_var.get() or "ping", stream, mt,
+            res = cli.test_chat(model, prompt, stream, mt,
                                 on_delta=cb if stream else None, with_image=image)
+            speed = report_speed(model, res, "流式连通性" if stream else "连通性", source)
             ttfb = f" | 首字 {res.ttfb * 1000:.0f} ms" if res.ttfb is not None else ""
             if res.ok:
                 content = res.text if stream else (extract_content(res.data) or "")
-                usage = "" if stream else extract_usage(res.data)
-                ui_log(f"[OK] {model} 连通 | 总耗时 {res.elapsed * 1000:.0f} ms{ttfb} | {usage}", "ok")
+                usage = extract_usage(res.data)
+                ui_log(f"[OK] {model} 连通 | 总耗时 {res.elapsed * 1000:.0f} ms{ttfb} | {speed} | {usage}", "ok")
                 ui_log(f"     回复: {content[:300]}", "ok")
                 uiq.put(("model_row", model, f"{res.elapsed * 1000:.0f} ms", "✔ 通"))
                 if not stream:
@@ -2046,7 +2084,7 @@ def build_gui():  # noqa: C901
                 ui_log(f"     响应: {res.text[:400]}", "err")
                 uiq.put(("model_row", model, f"{res.elapsed * 1000:.0f} ms", "✘ 失败"))
                 uiq.put(("resp", res.text[:20000]))
-            uiq.put(("detail", f"上次测试: {model} · {res.elapsed * 1000:.0f} ms{ttfb.replace(' |', ' ·')}"))
+            uiq.put(("detail", f"上次测试: {model} · {res.elapsed * 1000:.0f} ms · {speed}{ttfb.replace(' |', ' ·')}"))
             set_busy(False)
 
         threading.Thread(target=work, daemon=True).start()
@@ -2070,13 +2108,15 @@ def build_gui():  # noqa: C901
             mt = 16
         set_busy(True, f"批量测试 {len(targets)} 个模型...")
         image = image_var.get()
+        prompt = prompt_var.get() or "ping"
+        source = speed_source()
         ui_log(f">>> 批量并发测试 {len(targets)} 个模型 (非流式, max_tokens={mt}, 附带图片={image})")
 
         def work():
             ok_n = 0
             t_all = time.perf_counter()
             with ThreadPoolExecutor(max_workers=8) as pool:
-                futs = {pool.submit(cli.test_chat, m, prompt_var.get() or "ping", False, mt,
+                futs = {pool.submit(cli.test_chat, m, prompt, False, mt,
                                     with_image=image): m for m in targets}
                 for done_n, fut in enumerate(as_completed(futs), 1):
                     m = futs[fut]
@@ -2087,9 +2127,10 @@ def build_gui():  # noqa: C901
                         ui_log(f"[!!] {m} 异常: {e}", "err")
                         uiq.put(("model_row", m, "-", "✘ 异常"))
                         continue
+                    speed = report_speed(m, res, "批量测速", source)
                     if res.ok:
                         ok_n += 1
-                        ui_log(f"[OK] {m} | {res.elapsed * 1000:.0f} ms", "ok")
+                        ui_log(f"[OK] {m} | {res.elapsed * 1000:.0f} ms | {speed}", "ok")
                         uiq.put(("model_row", m, f"{res.elapsed * 1000:.0f} ms", "✔ 通"))
                     else:
                         ui_log(f"[!!] {m} | {res.elapsed * 1000:.0f} ms | {res.error}", "err")
@@ -2310,6 +2351,11 @@ def build_gui():  # noqa: C901
                 outcome = run_pelican_test(client, preview.store, record)
                 success = outcome["status"] == "complete"
                 status = "✔ 鹈鹕已生成" if success else "✘ 鹈鹕失败"
+                uiq.put(("speed", {"model": record["model"], "provider": cfg["name"],
+                    "key_name": cfg.get("active_key") or "未命名 Key", "kind": "鹈鹕 / SVG",
+                    "metrics": {"output_tokens": outcome.get("output_tokens"), "tps": outcome.get("tps"),
+                                "elapsed": outcome["elapsed"], "ttfb": outcome.get("ttfb")},
+                    "ok": success, "error": outcome.get("error", "")}))
                 uiq.put(("pelican_row", source_id, record["model"],
                          f"{outcome['elapsed'] * 1000:.0f} ms", status))
                 ui_log(f"[{'OK' if success else '!!'}] {record['model']}: "
@@ -2392,6 +2438,7 @@ def build_gui():  # noqa: C901
         menu.add_separator()
         menu.add_command(label="  测试选中模型", command=act_chat)
         menu.add_command(label="  批量测速选中", command=act_batch)
+        menu.add_command(label="  查看 t/s 速度", command=lambda: nb.select(speed_tab))
         menu.add_command(label="  测试 Embedding", command=act_emb)
         menu.add_command(label="  打开鹈鹕测试页", command=act_pelican)
         menu.add_command(label="  查看鹈鹕作品", command=open_pelican_history)
@@ -2412,7 +2459,7 @@ def build_gui():  # noqa: C901
     root.bind("<Control-Return>", lambda _e: act_chat())
     root.bind("<F5>", lambda _e: act_models())
     nb.bind("<<NotebookTabChanged>>", lambda _e: open_pelican_history()
-            if nb.select() == str(pelican_tab) else set_config_visible(True))
+            if nb.select() == str(pelican_tab) else set_config_visible(nb.select() != str(speed_tab)))
 
     ui_log("=== API 测试台 ===", "ok")
     ui_log("1. 填 Base URL + API Key，手动添加模型 ID 或按 F5 获取模型", "info")

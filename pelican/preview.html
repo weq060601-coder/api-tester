@@ -271,7 +271,8 @@ function renderRecords(){
  card.querySelector('.delete').onclick=e=>{e.stopPropagation();removeRecord(record)};
  card.querySelector('.model').textContent=record.model;card.querySelector('.model').title=record.model;
  card.querySelector('.provider').textContent=record.provider+' · '+(record.prompt_mode==='custom'?'自定义 SVG':'固定鹈鹕');card.querySelector('.provider').title=record.prompt||record.provider;
- card.querySelector('.time').textContent=record.created.replace('T',' ').slice(5,16);
+ card.querySelector('.time').textContent=record.created.replace('T',' ').slice(5,16)+(Number.isFinite(record.tps)?' · '+record.tps.toFixed(2)+' t/s':'');
+ card.querySelector('.time').title='平均速度 = 接口报告的输出 token ÷ 总耗时（包含等待）';
  const status=card.querySelector('.status');status.className='status'+(record.status==='failed'?' failed':'');
  status.textContent=record.status==='complete'?'已生成':record.status==='running'?'生成中 · '+(record.characters||0)+' 字符':'未生成作品';
  status.title=record.error||'';

@@ -153,7 +153,7 @@ class PelicanStore:
             self.records[record["id"]] = record
         return dict(record)
 
-    def finish(self, run_id: str, raw: str, elapsed: float, error: str = "") -> dict:
+    def finish(self, run_id: str, raw: str, elapsed: float, error: str = "", *, metrics: dict | None = None) -> dict:
         with self.lock:
             record = dict(self.records[run_id])
             folder = self.directory / run_id
@@ -167,6 +167,8 @@ class PelicanStore:
                     (folder / "artwork.html").write_text(document, encoding="utf-8")
             record.update(status="failed" if error else "complete", error=error, elapsed=elapsed,
                           characters=len(raw))
+            if metrics is not None:
+                record.update({key: metrics.get(key) for key in ("output_tokens", "tps", "ttfb")})
             self._write(record)
             self.records[run_id] = record
             return dict(record)
@@ -234,7 +236,7 @@ def run_pelican_test(client, store: PelicanStore, record: dict, on_delta=None) -
                                   on_delta=receive, with_image=False,
                                   reasoning_effort=record.get("reasoning_effort", ""))
         return store.finish(record["id"], result.text, result.elapsed,
-                            "" if result.ok else (result.error or "模型请求失败"))
+                            "" if result.ok else (result.error or "模型请求失败"), metrics=result.speed_metrics())
     except Exception as exc:
         return store.finish(record["id"], "".join(chunks), time.perf_counter() - start,
                             f"{type(exc).__name__}: {exc}")

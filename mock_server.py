@@ -175,6 +175,9 @@ class H(BaseHTTPRequestHandler):
                 self.wfile.write(b"data: " + json.dumps(piece, ensure_ascii=False).encode() + b"\n\n")
                 self.wfile.flush()
                 time.sleep(0.05)
+            self.wfile.write(b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+            if (body.get("stream_options") or {}).get("include_usage"):
+                self.wfile.write(b'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":2,"total_tokens":11}}\n\n')
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
             self.close_connection = True

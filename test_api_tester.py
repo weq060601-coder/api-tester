@@ -45,6 +45,8 @@ class PelicanTests(unittest.TestCase):
                     record = store.begin("mock-small", "Test", cli.protocol, PELICAN_DEFAULT_MAX_TOKENS)
                     outcome = run_pelican_test(cli, store, record)
                     self.assertEqual(outcome["status"], "complete", outcome)
+                    self.assertEqual(outcome["output_tokens"], 2)
+                    self.assertAlmostEqual(outcome["tps"], 2 / outcome["elapsed"])
                     path, body = build.call_args.args[:2]
                     limit_key = "max_output_tokens" if cli.protocol == "responses" else "max_tokens"
                     self.assertEqual(body[limit_key], 32768)
@@ -65,6 +67,67 @@ class PelicanTests(unittest.TestCase):
             restored = PelicanStore(Path(directory))
             self.assertEqual(len(restored.list_runs()), 3)
             self.assertTrue(all(r["status"] == "complete" for r in restored.list_runs()))
+            self.assertTrue(all(r["output_tokens"] == 2 and r["tps"] > 0 for r in restored.list_runs()))
+
+    def test_speed_reports_provider_tokens_for_stream_and_normal_protocols(self):
+        for profile in ("default", "claude-code", "codex"):
+            cli = api_tester.ApiClient(self.base, "sk-test", timeout=10, profile=profile)
+            for stream in (False, True):
+                result = cli.test_chat("mock-small", stream=stream)
+                self.assertTrue(result.ok, result.error)
+                self.assertEqual(result.speed_metrics()["output_tokens"], 2)
+                self.assertAlmostEqual(result.speed_metrics()["tps"], 2 / result.elapsed)
+                if stream:
+                    self.assertGreater(result.ttfb, 0)
+                    self.assertLessEqual(result.ttfb, result.elapsed)
+                    self.assertEqual(result.data["usage"], result.usage)
+        # Missing/malformed counts cannot silently become character estimates.
+        for usage in ({}, {"completion_tokens": None}, {"output_tokens": "100"},
+                      {"output_tokens": True}, {"output_tokens": -1}):
+            result = api_tester.ApiResult(True, text="很长的回复" * 100, elapsed=2, usage=usage)
+            self.assertIsNone(result.speed_metrics()["output_tokens"])
+            self.assertIsNone(result.speed_metrics()["tps"])
+        self.assertEqual(api_tester.ApiResult(True, elapsed=2, usage={"output_tokens": 0}).speed_metrics()["tps"], 0)
+        self.assertIsNone(api_tester.ApiResult(True, elapsed=0, usage={"output_tokens": 10}).speed_metrics()["tps"])
+
+    def test_stream_speed_collects_trailing_usage_and_times_first_text_not_ping(self):
+        import io
+        events = [
+            {"type": "ping"},
+            {"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]},
+            {"choices": [{"delta": {"content": "正文"}, "finish_reason": None}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+            {"choices": [], "usage": {"completion_tokens": 80}},
+        ]
+        class Response(io.BytesIO):
+            status = 200
+        data = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events) + b"data: [DONE]\n\n"
+        cli = api_tester.ApiClient("http://127.0.0.1:9/v1")
+        with patch.object(cli.opener, "open", return_value=Response(data)), \
+                patch.object(api_tester.time, "perf_counter", side_effect=[100, 102, 105]):
+            result = cli.test_chat("test", stream=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.text, "正文")
+        self.assertEqual(result.ttfb, 2)
+        self.assertEqual(result.elapsed, 5)
+        self.assertEqual(result.speed_metrics()["tps"], 16)
+        partial = b'data: {"choices":[{"delta":{"content":"partial"}}],"usage":{"completion_tokens":3}}\n\n'
+        with patch.object(cli.opener, "open", return_value=Response(partial)):
+            result = cli.test_chat("test", stream=True)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.text, "partial")
+        self.assertEqual(result.speed_metrics()["output_tokens"], 3)
+
+        anthropic = [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 9, "output_tokens": 1}}},
+            {"type": "content_block_delta", "delta": {"type": "text_delta", "text": "hello"}},
+            {"type": "message_delta", "usage": {"output_tokens": 40}, "delta": {"stop_reason": "end_turn"}},
+            {"type": "message_stop"},
+        ]
+        data = b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in anthropic)
+        with patch.object(cli.opener, "open", return_value=Response(data)):
+            result = cli.test_chat("test", stream=True)
+        self.assertEqual(result.usage, {"input_tokens": 9, "output_tokens": 40})
 
     def test_custom_svg_prompt_is_sent_verbatim_and_fixed_prompt_is_unchanged(self):
         import hashlib
@@ -644,6 +707,75 @@ class GuiPersistenceTests(unittest.TestCase):
                 self.assertEqual(self.combo(root, "鹈鹕测试").get(), "高")
             self.run_gui(settings, restored)
 
+    def test_speed_tab_records_real_tests_without_sending_on_open(self):
+        import speed_view
+        server = ThreadingHTTPServer(("127.0.0.1", 0), mock_server.H)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                settings = Path(directory) / "settings.json"
+                settings.write_text(json.dumps({"base_url": f"http://127.0.0.1:{server.server_port}/v1",
+                                                "api_key": "sk-test"}), encoding="utf-8")
+                views, calls = [], []
+                view_type = speed_view.SpeedView
+                original = api_tester.ApiClient.test_chat
+                def factory(*args, **kwargs):
+                    view = view_type(*args, **kwargs)
+                    views.append(view)
+                    return view
+                def chat(client, *args, **kwargs):
+                    calls.append((args, kwargs))
+                    return original(client, *args, **kwargs)
+                def driver(root):
+                    self.add_model_ids(root, "mock-small,mock-large")
+                    tree = self.model_tree(root)
+                    tree.selection_set(tree.get_children()[0])
+                    notebook = next(w for w in self.widgets(root) if isinstance(w, ttk.Notebook))
+                    speed_tab = next(tab for tab in notebook.tabs() if notebook.tab(tab, "text") == "t/s 速度")
+                    notebook.select(speed_tab)
+                    root.update()
+                    self.assertEqual(calls, [])
+                    view = views[-1]
+                    self.assertEqual(view.rows, {})
+                    def wait(count):
+                        deadline = time.monotonic() + 8
+                        while time.monotonic() < deadline:
+                            root.update()
+                            button = next(w for w in self.widgets(root) if isinstance(w, ttk.Button) and w.cget("text") == "测试连通性")
+                            if len(view.rows) == count and str(button.cget("state")) == "normal":
+                                break
+                            time.sleep(0.02)
+                        self.assertEqual(len(view.rows), count)
+                    self.press(root, "测试连通性")
+                    wait(1)
+                    toggle = next(w for w in self.widgets(root) if isinstance(w, ttk.Checkbutton) and w.cget("text") == "流式 SSE")
+                    toggle.invoke()
+                    self.press(root, "测试连通性")
+                    wait(2)
+                    tree.selection_set(tree.get_children())
+                    self.press(root, "批量测速")
+                    wait(4)
+                    self.assertEqual(len(calls), 4)
+                    self.assertEqual({r["kind"] for r in view.rows.values()}, {"连通性", "流式连通性", "批量测速"})
+                    for row in view.rows.values():
+                        self.assertEqual(row["metrics"]["output_tokens"], 2)
+                        self.assertGreater(row["metrics"]["tps"], 0)
+                        self.assertEqual(row["key_name"], "未命名 Key")
+                    view.tree.selection_set(view.tree.get_children()[0])
+                    self.press(root, "复制所选记录")
+                    self.assertIn("平均 t/s", root.clipboard_get())
+                    self.assertNotIn("sk-test", root.clipboard_get())
+                    self.press(root, "清空速度记录")
+                    self.assertEqual(view.rows, {})
+                    self.assertEqual(self.model_ids(root), ["mock-small", "mock-large"])
+                    self.assertEqual(len(calls), 4)
+                with patch("speed_view.SpeedView", side_effect=factory), \
+                        patch.object(api_tester.ApiClient, "test_chat", chat):
+                    self.run_gui(settings, driver)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_svg_template_management_and_restart_without_generating(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Path(directory) / "settings.json"
@@ -835,6 +967,10 @@ class GuiPersistenceTests(unittest.TestCase):
                     self.assertTrue(all(r["reasoning_effort"] == "high" for r in stored))
                     self.assertTrue(all(r["prompt_mode"] == "custom" for r in stored))
                     self.assertTrue(all(r["prompt"] == custom_svg_prompt for r in stored))
+                    speed_tree = next(w for w in self.widgets(root) if isinstance(w, ttk.Treeview)
+                                      and "tps" in w.cget("columns"))
+                    self.assertEqual(len(speed_tree.get_children()), 2)
+                    self.assertTrue(all(float(speed_tree.set(iid, "tps")) > 0 for iid in speed_tree.get_children()))
 
                 with patch.object(api_tester, "PELICAN_RESULTS_PATH", results), \
                         patch.object(PelicanPreview, "embed", open_window), \
