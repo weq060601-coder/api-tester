@@ -5,11 +5,11 @@ OpenAI 兼容 API 测试工具。API 测试和主界面只使用 Python 标准�
 供应商档案支持保存、重命名和删除。选中已保存档案后点击该行「重命名」，绑定的命名 Key、各 Key 模型列表和连接设置随档案保留，新名称立即保存；同名档案禁止覆盖。当前测试结束后可改名，历史作品保留测试时的供应商名称。
 鹈鹕预览是主界面「鹈鹕测试」标签内的单一原生 WebView2 区域，与主界面使用同一套深色、青绿色样式；并发测试只复用这一个区域，不为每个模型创建窗口。渲染器作为固定子控件跟随标签页尺寸变化。源码版的 `pywebview` 依赖安装在本项目的 `.preview-venv`，不修改全局 Python 环境；绿色 EXE 已内置这些依赖。
 
-## Windows 绿色版
+## Windows 文件夹绿色版
 
-解压 `dist/API-Tester-Windows-x64-portable.zip`，双击其中的 `API-Tester.exe`，无需安装 Python、无需管理员权限。也可以只携带这个 EXE。支持 Windows 10/11 x64，鹈鹕内嵌预览需要系统 Microsoft Edge WebView2 Runtime 和 .NET Framework 4.6.2+；Windows 11 通常已具备。如果缺少 WebView2，请安装[微软运行时](https://developer.microsoft.com/microsoft-edge/webview2/)。
+完整解压 `dist/API-Tester-Windows-x64-folder-portable.zip`，进入 `API-Tester` 文件夹，双击 `启动.bat` 或 `API-Tester.exe`。无需安装 Python、无需管理员权限；请保留同目录的 `_internal` 运行依赖，不要只复制 EXE 或在压缩包内直接运行。此版启动无需把运行组件临时解包。支持 Windows 10/11 x64，鹈鹕内嵌预览需要系统 Microsoft Edge WebView2 Runtime 和 .NET Framework 4.6.2+；Windows 11 通常已具备。如果缺少 WebView2，请安装[微软运行时](https://developer.microsoft.com/microsoft-edge/webview2/)。
 
-配置和 Key 保存在 EXE 旁的 `settings.json`，作品保存在旁边的 `pelican/results/`。请放在可写文件夹；更新时替换 EXE，迁移时同时带走自己的配置与作品。源码版用户可把这两项复制到 EXE 旁继续使用。发布包只含 EXE 和使用说明，不包含任何 Key、用户配置或作品。单文件启动会先解压运行组件到系统临时目录，首次可能需要几秒。
+配置和 Key 保存在启动程序旁的 `settings.json`，作品保存在旁边的 `pelican/results/`。请放在可写文件夹；更新时解压到新文件夹，再复制自己的配置和作品过去；迁移时移动整个文件夹。源码版或旧 EXE 用户可把自己的 `settings.json` 和 `pelican/results/` 复制进新 `API-Tester` 文件夹继续使用。发布包包含程序、运行依赖、启动器、说明和文件校验表，不包含任何 Key、用户配置或作品。
 
 在 Windows x64、Python 3.13 下重新构建：
 
@@ -17,7 +17,7 @@ OpenAI 兼容 API 测试工具。API 测试和主界面只使用 Python 标准�
 python build_tools/build.py
 ```
 
-构建器使用独立 `.build-venv`，输出单文件 EXE、绿色版压缩包和 `dist/SHA256.json`。资源按白名单打包，仅包含程序代码、预览页面和运行依赖；不会把工作目录或用户数据整包收进去。构建环境与产物均排除在 Git 之外。
+构建器使用独立 `.build-venv`，在新建的临时构建目录内生成文件夹版，再输出绿色压缩包和 `dist/folder-portable-SHA256.json`，不覆盖可能已有用户数据的旧发布目录。ZIP 内的 `文件校验.json` 列出程序文件 SHA256。资源按白名单打包，仅包含程序代码、预览页面和运行依赖；不会把工作目录或用户数据整包收进去。构建环境与产物均排除在 Git 之外。
 
 鹈鹕测试的记录卡片和右侧详情现在直接显示生成速度、耗时及等待/思考/正文输出状态，无需切到「t/s 速度」。生成中未返回准确用量时显示 `≈ … t/s（估算）`，收到接口用量后使用报告值；完成后的平均 t/s 仍按接口输出 token 除以总耗时计算。估算包含已收到的可见思考文本，不能测量供应商未返回的隐藏思考。尚未收到输出时显示「等待首字」，接口最终缺少用量则显示「未报告」。
 

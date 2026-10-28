@@ -19,8 +19,12 @@ analysis = Analysis(
 )
 pyz = PYZ(analysis.pure)
 exe = EXE(
-    pyz, analysis.scripts, analysis.binaries, analysis.datas, [],
+    pyz, analysis.scripts, [], exclude_binaries=True,
     name="API-Tester", debug=False, bootloader_ignore_signals=False,
     strip=False, upx=False, console=False,
     version=str(root / "build_tools" / "version.txt"),
+)
+distribution = COLLECT(
+    exe, analysis.binaries, analysis.datas,
+    strip=False, upx=False, name="API-Tester",
 )
