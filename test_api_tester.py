@@ -689,6 +689,91 @@ class GuiPersistenceTests(unittest.TestCase):
             self.run_gui(settings, driver)
             self.run_gui(settings, lambda root: self.assertEqual(self.model_ids(root), ["two"]))
 
+    def test_supplier_rename_preserves_keys_model_slots_and_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            settings = Path(directory) / "settings.json"
+            slot_a = {"models": ["a-model"], "results": {"a-model": ["12 ms", "✔ OK"]}, "save_models": True}
+            slot_b = {"models": ["b-model"], "results": {}, "save_models": True}
+            cfg = {"base_url": "http://rename.test/v1", "api_key": "test-b",
+                   "named_keys": {"A": "test-a", "B": "test-b"}, "active_key": "B",
+                   "key_models": {"A": slot_a, "B": slot_b}, **slot_b,
+                   "timeout": "123", "protocol": "responses", "headers": "X-Test: rename"}
+            other = {"base_url": "http://other.test/v1", "api_key": "other-test"}
+            settings.write_text(json.dumps({**cfg, "providers": {"原名称": cfg, "另一个": other},
+                "active_provider": "原名称", "pelican_max_tokens": "49152", "pelican_timeout": "240",
+                "pelican_reasoning": "低"}), encoding="utf-8")
+            store = PelicanStore(Path(directory) / "results")
+            previews = []
+            def factory(*args, **kwargs):
+                preview = PelicanPreview(*args, **kwargs)
+                previews.append(preview)
+                return preview
+            def rename(root, answer):
+                button = next(w for w in self.row_widgets(root, "供应商档案")
+                              if isinstance(w, ttk.Button) and w.cget("text") == "重命名")
+                with patch("tkinter.simpledialog.askstring", return_value=answer):
+                    button.invoke()
+                root.update()
+            def create(root):
+                for answer in (None, "   ", "原名称", "另一个"):
+                    rename(root, answer)
+                    self.assertEqual(self.combo(root, "供应商档案").get(), "原名称")
+                    self.assertEqual(set(json.loads(settings.read_text(encoding="utf-8"))["providers"]),
+                                     {"原名称", "另一个"})
+                # A failed write must leave the old profile selected and usable.
+                with patch.object(Path, "replace", side_effect=PermissionError("mock read-only")):
+                    rename(root, "失败改名")
+                self.assertEqual(self.combo(root, "供应商档案").get(), "原名称")
+                self.assertNotIn("失败改名", self.combo(root, "供应商档案").cget("values"))
+                self.press(root, "查看作品")
+                self.press(root, "展开设置")
+                running = store.begin("b-model", "原名称", "responses", 32768)
+                rename(root, "测试中不能改")
+                self.assertEqual(self.combo(root, "供应商档案").get(), "原名称")
+                store.finish(running["id"], "", 0, "MOCK stopped")
+                self.set_entry(self.entry(root, "超时 / 代理"), "456")
+                rename(root, "  新名称  ")
+                self.assertEqual(self.combo(root, "供应商档案").get(), "新名称")
+                saved = json.loads(settings.read_text(encoding="utf-8"))
+                self.assertEqual(list(saved["providers"]), ["新名称", "另一个"])
+                self.assertEqual(saved["active_provider"], "新名称")
+                self.assertEqual(saved["providers"]["新名称"]["named_keys"], cfg["named_keys"])
+                self.assertEqual(saved["providers"]["新名称"]["key_models"], cfg["key_models"])
+                self.assertEqual(saved["providers"]["新名称"]["timeout"], "456")
+                self.assertEqual(saved["providers"]["新名称"]["headers"], cfg["headers"])
+                context = json.load(urllib.request.urlopen(previews[0].url + "api/context"))
+                self.assertEqual(context["selected_provider"], "saved:新名称")
+                self.assertEqual(context["providers"][0]["name"], "新名称")
+                self.assertNotIn("saved:原名称", [p["id"] for p in context["providers"]])
+                self.assertEqual(store.list_runs()[0]["provider"], "原名称")
+                self.select(root, "命名 Key", "A")
+                self.assertEqual(self.entry(root, "API Key").get(), "test-a")
+                self.assertEqual(self.model_ids(root), ["a-model"])
+                self.select(root, "供应商档案", "另一个")
+                self.select(root, "供应商档案", "新名称")
+                self.assertEqual(self.model_ids(root), ["a-model"])
+            def restored(root):
+                self.assertEqual(self.combo(root, "供应商档案").get(), "新名称")
+                self.assertEqual(self.combo(root, "命名 Key").get(), "A")
+                self.assertEqual(self.entry(root, "API Key").get(), "test-a")
+                self.assertEqual(self.model_ids(root), ["a-model"])
+                self.assertEqual(self.entry(root, "超时 / 代理").get(), "456")
+                self.assertEqual(self.entry(root, "鹈鹕测试").get(), "49152")
+                self.assertEqual(self.combo(root, "鹈鹕测试").get(), "低")
+                self.select(root, "命名 Key", "B")
+                self.assertEqual(self.entry(root, "API Key").get(), "test-b")
+                self.assertEqual(self.model_ids(root), ["b-model"])
+            with patch.object(api_tester.ApiClient, "test_chat") as chat, \
+                    patch.object(api_tester.ApiClient, "list_models") as models, \
+                    patch.object(api_tester, "PelicanStore", return_value=store), \
+                    patch.object(api_tester, "PelicanPreview", side_effect=factory), \
+                    patch.object(api_tester, "migrate_legacy_files"), \
+                    patch.object(PelicanPreview, "embed"):
+                self.run_gui(settings, create)
+                self.run_gui(settings, restored)
+                chat.assert_not_called()
+                models.assert_not_called()
+
     def test_named_keys_supplier_switch_and_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             settings = Path(directory) / "settings.json"
@@ -699,7 +784,11 @@ class GuiPersistenceTests(unittest.TestCase):
                 self.press(root, "保存/新增 Key", "主 Key")
                 self.set_entry(self.entry(root, "API Key"), "test-a2")
                 self.press(root, "保存/新增 Key", "备用 Key")
-                self.press(root, "重命名", "备用改名")
+                button = next(w for w in self.row_widgets(root, "命名 Key")
+                              if isinstance(w, ttk.Button) and w.cget("text") == "重命名")
+                with patch("tkinter.simpledialog.askstring", return_value="备用改名"):
+                    button.invoke()
+                root.update()
                 self.set_entry(self.entry(root, "Base URL"), "http://supplier-b.test/v1")
                 self.assertEqual(self.entry(root, "API Key").get(), "")
                 self.set_entry(self.entry(root, "API Key"), "test-b1")

@@ -988,6 +988,7 @@ def build_gui():  # noqa: C901
     provider_box = ttk.Combobox(fr, state="readonly", width=12, values=[])
     provider_box.pack(side="left", fill="x", expand=True)
     ttk.Button(fr, text="保存供应商", style="Compact.TButton", command=lambda: save_provider()).pack(side="left", padx=(px(6), 0))
+    ttk.Button(fr, text="重命名", style="Compact.TButton", command=lambda: rename_provider()).pack(side="left", padx=(px(4), 0))
     ttk.Button(fr, text="删除", style="Compact.TButton", width=3, command=lambda: delete_provider()).pack(side="left", padx=(px(4), 0))
 
     fr = row(conn, 3, "API Key")
@@ -1755,6 +1756,47 @@ def build_gui():  # noqa: C901
         provider_box.set(name)
         ui_log(f"[OK] 已保存供应商档案: {name}", "ok")
         save_now()
+
+    def rename_provider():
+        old = provider_box.get()
+        providers = state.get("providers", {})
+        if old not in providers:
+            ui_log("[!] 先选择要重命名的供应商档案", "warn")
+            return
+        name = simpledialog.askstring("重命名供应商", "新的供应商名称:", initialvalue=old, parent=root)
+        if not name or not name.strip() or name.strip() == old:
+            return
+        name = name.strip()
+        if name in providers:
+            ui_log("[!] 已有同名供应商，请换一个名称", "warn")
+            return
+        # Results are routed by saved supplier name. Keep it stable until all
+        # submitted jobs and queued UI result updates have finished.
+        drain_log_pending = state.get("drain_id")
+        if drain_log_pending:
+            root.after_cancel(drain_log_pending)
+            drain_log()
+        preview = state.get("pelican_preview")
+        if state["testing"] or (preview and any(r["status"] == "running" for r in preview.store.list_runs())):
+            ui_log("[!] 请等待当前测试完成再重命名供应商", "warn")
+            return
+        capture_provider()
+        previous = dict(providers)
+        # Preserve list order and every key/model slot. This is a move, not a
+        # second saved profile; current edits were captured above.
+        state["providers"] = {name if key == old else key: value for key, value in providers.items()}
+        state["active_provider"] = name
+        provider_box.configure(values=list(state["providers"]))
+        provider_box.set(name)
+        if not save_now():
+            state["providers"] = previous
+            state["active_provider"] = old
+            provider_box.configure(values=list(previous))
+            provider_box.set(old)
+            sync_pelican_sources()
+            return
+        sync_pelican_sources()
+        ui_log(f"[OK] 供应商已重命名: {old} → {name}", "ok")
 
     def apply_provider(_evt=None):
         if state["testing"]:
