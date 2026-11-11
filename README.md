@@ -134,7 +134,7 @@ python api_tester.py --base-url https://relay.example.com/v1 --api-key sk-xxx ^
 
 - 优先级：基础头 < profile < `--ua` < `--header`。profile 永远不会碰鉴权头；只有显式 `--header` 才能覆盖。
 - 字面量来源（本机已装客户端）：Claude Code 2.1.288 `claude.exe` 中的 `ZO()` / `kw()` 与 SDK 头构造；Codex 0.160.0 `codex.exe` 中 `login/src/auth/default_client.rs` 的 UA 模板；pi 1.0.3 的 `dist` 源码。客户端升级后用 `--client-version` 覆盖版本号即可。
-- 每次启动生成新的 session UUID。
+- 每次创建 `ApiClient` 实例时生成新的 UUID v4 会话 ID，同一实例的请求复用该 ID；鹈鹕多模型测试为每个模型创建独立实例，默认使用不同 ID。`claude-code` 将其写入 `X-Claude-Code-Session-Id`，`codex` 写入 `session_id`，`default` / `pi` 默认不发送会话 ID 头；可通过自定义头覆盖。这是请求头层面的模拟，不表示接续服务端已有对话。
 - 获取模型、Embedding 不分协议，始终走 `/models`、`/embeddings`，只是带上伪装头。
 
 已知局限（只伪装头 + 协议，不复刻完整客户端指纹）：

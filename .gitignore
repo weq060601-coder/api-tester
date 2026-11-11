@@ -20,6 +20,7 @@ pelican/diagnostics/
 # User-generated Pelican runs and artwork
 pelican/results/
 pelican/examples/
+pelican-ride.html
 
 # Local editor/OS files
 .vscode/
